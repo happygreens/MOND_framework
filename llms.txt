@@ -1,0 +1,980 @@
+<?php
+// === MOND MASTER BLUEPRINT RAW (UNBERUEHRTER MASTER-ROHLING) ===
+// Modul: {{MOD_NAME_UP}}
+// App: {{MOD_TITLE}}
+// Version: 2.1.0 (2026 - 4 PayHub Models, Hybrid Plaintext/B64 Unpacker, Studio Slots & Partner Ref)
+// Urheberrecht & Marke: Copyright (c) 2026 Mario Berg (MOND.TV). Alle Rechte vorbehalten.
+
+@ini_set('display_errors', '0');
+error_reporting(E_ALL);
+
+if (session_status() === PHP_SESSION_NONE and !headers_sent() and php_sapi_name() !== 'cli') {
+    @session_start();
+}
+
+$selfDir     = str_replace('\\', '/', __DIR__);
+$folderBase  = basename($selfDir);
+$moduleName  = '{{MOD_NAME}}';
+if ($moduleName === '' or str_starts_with($moduleName, '{{')) {
+    $moduleName = $folderBase;
+}
+
+$origScriptFilename = isset($_SERVER['SCRIPT_FILENAME']) ? str_replace('\\', '/', (string)$_SERVER['SCRIPT_FILENAME']) : '';
+if (!defined('MOND_LIB_LOADING')) {
+    define('MOND_LIB_LOADING', true);
+}
+
+// =========================================================================
+// 1. BOOTLOADER & CORE-ANBINDUNG (6-STUFIGER SUCHLAUF)
+// =========================================================================
+if (!defined('MOND_ROOT')) {
+    $scanDir      = __DIR__;
+    $maxLevels    = 6;
+    $currentLevel = 0;
+    while ($scanDir !== dirname($scanDir) and $currentLevel < $maxLevels) {
+        if (is_dir($scanDir . '/hub') and (file_exists($scanDir . '/_bootloader/_bootloader.php') or file_exists($scanDir . '/hub/_bootloader.php'))) {
+            define('MOND_ROOT', str_replace('\\', '/', $scanDir));
+            break;
+        }
+        $bootFile = $scanDir . '/_bootloader/_bootloader.php';
+        if (file_exists($bootFile)) {
+            require_once $bootFile;
+            break;
+        }
+        $scanDir = dirname($scanDir);
+        $currentLevel++;
+    }
+}
+
+$mondRoot = defined('MOND_ROOT') ? rtrim(str_replace('\\', '/', MOND_ROOT), '/') : '';
+if (str_ends_with($mondRoot, '/hub')) {
+    $mondRoot = dirname($mondRoot);
+}
+
+if (!function_exists('load_lib')) {
+    $coreCandidates = array(
+        $mondRoot . '/hub/_core/core.php',
+        $mondRoot . '/_core/core.php',
+        dirname(__DIR__, 2) . '/_core/core.php'
+    );
+    foreach ($coreCandidates as $cc) {
+        if (file_exists($cc)) {
+            require_once $cc;
+            break;
+        }
+    }
+}
+
+$loaderFn = function_exists('load_lib') ? 'load_lib' : (function_exists('hub') ? 'hub' : null);
+if ($loaderFn !== null) {
+    try { $loaderFn('auth'); } catch (Throwable $e) {}
+    try { $loaderFn('layout'); } catch (Throwable $e) {}
+    try { $loaderFn('lang'); } catch (Throwable $e) {}
+}
+
+// Partner-Referrer (?ref=REF-...) aus URL in Session merken
+if (isset($_GET['ref']) and trim((string)$_GET['ref']) !== '') {
+    $_SESSION['mond_ref_code'] = preg_replace('/[^a-zA-Z0-9_-]/', '', trim((string)$_GET['ref']));
+}
+
+// =========================================================================
+// 2. LOKALE SPRACH-FALLBACKS & 6-STUFEN-KASKADE (tl)
+// =========================================================================
+$local_words_fallback = array(
+    'de' => array(
+        'raw_blueprint_title' => 'MOND Master-Blueprint (Rohling)',
+        'raw_blueprint_desc'  => 'Autarkes MOND-Modul mit integrierter PayHub-Monetarisierung und Master-DNA.',
+        'payhub_box_title'    => 'Monetarisierung & Lizenzen (PayHub)',
+        'payhub_box_desc'     => 'Waehlen Sie Ihr gewuenschtes Modell. Sofortige Freischaltung ueber PayHub & Stripe.',
+        'btn_buy_single'      => 'Einzelkauf',
+        'btn_buy_sub'         => 'Abo',
+        'btn_buy_tokens'      => 'Credits',
+        'btn_buy_buyout'      => 'Buyout',
+        'btn_burn_raw'        => 'Brennen'
+    ),
+    'en' => array(
+        'raw_blueprint_title' => 'MOND Master Blueprint (Raw Skeleton)',
+        'raw_blueprint_desc'  => 'Self-contained MOND module with integrated PayHub monetization and Master DNA.',
+        'payhub_box_title'    => 'Monetization & Licenses (PayHub)',
+        'payhub_box_desc'     => 'Choose your preferred model. Instant activation via PayHub & Stripe.',
+        'btn_buy_single'      => 'Single',
+        'btn_buy_sub'         => 'Subscribe',
+        'btn_buy_tokens'      => 'Credits',
+        'btn_buy_buyout'      => 'Buyout',
+        'btn_burn_raw'        => 'Burn'
+    )
+);
+
+$bpPrioFile       = $selfDir . '/i18n_prio_words.json';
+$bpPrioWords      = array();
+$bpAvailableLangs = array();
+
+if (file_exists($bpPrioFile)) {
+    $rawBpPrio = json_decode((string)@file_get_contents($bpPrioFile), true);
+    if (is_array($rawBpPrio)) {
+        $bpPrioWords = (isset($rawBpPrio['translations']) and is_array($rawBpPrio['translations'])) ? $rawBpPrio['translations'] : $rawBpPrio;
+        if (!empty($rawBpPrio['languages']) and is_array($rawBpPrio['languages'])) {
+            foreach ($rawBpPrio['languages'] as $jLang) {
+                $cleanL = preg_replace('/[^a-z]/', '', strtolower((string)$jLang));
+                if ($cleanL !== '' and !in_array($cleanL, $bpAvailableLangs, true)) {
+                    $bpAvailableLangs[] = $cleanL;
+                }
+            }
+        }
+    }
+}
+
+if (empty($bpAvailableLangs)) {
+    $bpAvailableLangs = array_keys($local_words_fallback);
+}
+$bpDefaultLang = !empty($bpAvailableLangs) ? (string)$bpAvailableLangs[0] : 'de';
+
+if (!empty($_GET['lang'])) {
+    $reqBpLang = preg_replace('/[^a-z]/', '', strtolower((string)$_GET['lang']));
+    if (in_array($reqBpLang, $bpAvailableLangs, true)) {
+        $_SESSION['mond_lang'] = $reqBpLang;
+    }
+}
+$activeLang = isset($_SESSION['mond_lang']) ? (string)$_SESSION['mond_lang'] : $bpDefaultLang;
+if (!in_array($activeLang, $bpAvailableLangs, true)) {
+    $activeLang = $bpDefaultLang;
+}
+
+if (!function_exists('tl')) {
+    function tl(string $key, string $seedText = ''): string {
+        global $local_words_fallback, $bpPrioWords, $activeLang, $bpDefaultLang;
+        if (!empty($bpPrioWords[$key][$activeLang])) return (string)$bpPrioWords[$key][$activeLang];
+        if (!empty($local_words_fallback[$activeLang][$key])) return (string)$local_words_fallback[$activeLang][$key];
+        foreach (array($bpDefaultLang, 'en', 'de') as $fbLang) {
+            if (!empty($bpPrioWords[$key][$fbLang])) return (string)$bpPrioWords[$key][$fbLang];
+            if (!empty($local_words_fallback[$fbLang][$key])) return (string)$local_words_fallback[$fbLang][$key];
+        }
+        return ($seedText !== '') ? $seedText : $key;
+    }
+}
+
+if (!function_exists('mond_get_blueprinter_url')) {
+    function mond_get_blueprinter_url(): string {
+        if (file_exists(__DIR__ . '/blueprinter.php')) {
+            return './blueprinter.php';
+        }
+        if (function_exists('getModulUrl')) {
+            $u = getModulUrl('blueprinter');
+            if (!empty($u) and !str_starts_with($u, '#')) return $u;
+        }
+        return './blueprinter.php';
+    }
+}
+
+// =========================================================================
+// 3. FACHLOGIK-SLOT (FUER MODUL STUDIO INJEKTION)
+// =========================================================================
+// === [MOND_SLOT: FACHLOGIK_START] ===
+{{DB_LOGIC}}
+// === [MOND_SLOT: FACHLOGIK_END] ===
+
+// =========================================================================
+// 4. VERSIEGELTE MASTER-DNA & AUTOPOIESE-ENTPACKER (VOR EARLY-RETURN!)
+// =========================================================================
+// === [MOND_SLOT: SEALED_DNA_START] ===
+// =========================================================================
+// EINGEBRANNTE MASTER-DNA: PHASE 1 (LLMS) & PHASE 2 (DATEIBAUM)
+// =========================================================================
+/*
+ * Revisions-ID: FORGE-2026-0B1ED2
+ * NFC-Token:    MOND-TOKEN-0B1ED2
+ * Sprache:      de
+ * Brennzeit:    2026-11-16 07:31:06
+ * SHA-256:      0b1ed2fd247e6e5f505b8425c41eef483d46bcf05df60abede11dac0080be937
+ * Rohling:      blueprint_raw.php (20517 Bytes)
+ * Phase 1 LLMS: 6 Dokumente aktiv
+ * Phase 2 Tree: 3 Ordner, 8 Dateien (70,14 KB)
+ *
+ * VERZEICHNISSTRUKTUR (DATEIBAUM):
+ *   [ROOT] blueprint_file_input/ (Sprachfilter: DE)
+ *   |-- [DIR]  assets/
+ *   |-- [DIR]  mail/
+ *   |-- [DIR]  tpl/
+ *   |-- [FILE] [DE] [TXT] mail/mail_order_de.html (305 B)
+ *   |-- [FILE] [TXT] assets/hero_anim.svg (780 B)
+ *   |-- [FILE] [TXT] assets/logo.svg (302 B)
+ *   |-- [FILE] [TXT] i18n_prio_words.json (517 B)
+ *   |-- [FILE] [TXT] index.php (67,11 KB)
+ *   |-- [FILE] [TXT] menu.json (756 B)
+ *   |-- [FILE] [TXT] tpl/cert.html (213 B)
+ *   |-- [FILE] [TXT] tpl/receipt.html (229 B)
+ */
+if (!defined('MOND_COMMERCIAL_DISABLED')) { define('MOND_COMMERCIAL_DISABLED', false); }
+
+$STANDARDS_FALLBACK = <<<'MD_STANDARDS_SEAL'
+# MOND.TV LLMS / LMMS MASTER CONTEXT [DE]
+# Generiert am: 2026-11-16 07:31:06
+# Aktive Module: dev_standards, correction_ledger, readme, license, skill_directives, vision
+
+## VISION (VISION_de.md)
+
+_Noch kein Inhalt hinterlegt._
+
+---
+
+## README (README_de.md)
+
+# MOND.TV Master Blueprint & AI Skill (v2.1.0)
+
+[![Standard: MOND v2.1.0](https://img.shields.io/badge/MOND-Standard%20v2.1.0-38bdf8)](https://mond.tv)
+[![License: Proprietary / Community](https://img.shields.io/badge/License-Copyright%20Mario%20Berg-amber)](https://mond.tv/payhub)
+
+Offizielle Spezifikation, Härtungs-Protokolle, Autopoiese-Entpacker und KI-Prompt-Engine für das autarke, mobile-first Webanwendungs-Framework von MOND.TV.
+
+---
+
+## 🚀 Was ist der MOND-Standard?
+
+Der MOND Master-Blueprint ist eine strikte Architektur für PHP-, JavaScript- und CSS-Anwendungen, die maximale Resilienz, Autarkie und mobile UI-Effizienz garantiert:
+
+- **Mobile-First & Resilienz:** Jedes Modul ist kompromisslos für mobile Endgeräte und moderne Web-Environments optimiert (inklusive striktem Mobile Viewport, 18-Zeichen-Akkordeons und flüssigen Layouts).
+- **Autarkie-Gebot (Mutterschiff-Regel):** Jedes Modul läuft standalone ohne externes Framework, dockt aber nahtlos an den zentralen MOND-Core an, falls vorhanden.
+- **Zero-Dependency-Philosophie:** Maximale Unabhängigkeit durch reines Vanilla JavaScript, modulares CSS und eigenständige PHP-Bootloaders ohne schwere Framework-Bloats.
+- **7-Tier Lokalisierungs-Kaskade & Dual-Engine:** Einheitlicher Sprachzugriff über `tl('key', 'Default')` mit Admin-Live-Editor (`?edit=1`) und performantem Markdown/HTML-Dokumentenloader (`tl_md()`).
+- **Cyber-Grid & Verben-Verbot:** Mobile Aktionsflächen liegen bündig im 2-Spalten-Raster (`.mond-grid-2`). Buttons verwenden ausnahmslos reine Nomen mit führendem Icon.
+- **Universal Voice & Data Contract:** Direkte JSON-Schnittstelle (`?mond_voice=1`) für Siri, Alexa und Google Assistant.
+- **Rollen & Berechtigungen:** `$userRole` (bzw. `$authLevel`) prüft Stufe 0 (Gast), 1 (Kunde/Client), 2 (Admin/Pro) und 3 (Superadmin/Kernel).
+
+---
+
+## 💳 PayHub & Kasseninfrastruktur (0 € Fixkosten)
+
+Jedes MOND-Modul integriert standardmäßig die universelle, schlanke PayHub-Kassenschnittstelle für sofortige Monetarisierung (**komplett ohne monatliche Fixkosten**, im Gegensatz zu teuren Plattformen wie Shopify):
+
+```text
+https://mond.tv/pay/PRODUKT/PREISEur?vendor=VENDOR
+```
+
+- **PRODUKT:** Kennung des digitalen Produkts oder Moduls.
+- **PREIS:** Betrag (inkl. Währung).
+- **VENDOR:** Das persönliche PayHub-Partnerkürzel des Entwicklers oder Übersetzers (z. B. `mario`).
+
+---
+
+## 🌍 Für Übersetzer & Partner (Transparentes Revenue Sharing)
+
+Das MOND-Framework setzt auf eine faire, offene Community mit absoluter Kostentransparenz:
+1. **Übersetzen:** Du übersetzt Module oder die Dokumentation in deine Landessprache (z. B. Französisch, Polnisch, Ukrainisch, Schwedisch etc.).
+2. **Registrieren:** Erstelle dir deinen offiziellen Account und Partner-Key auf dem [MOND PayHub Partner-Portal](https://mond.tv/payhub/register).
+3. **Verdienen:** Nutze deinen persönlichen Vendor-Link (`?vendor=DEIN_NAME`). 
+   - **Transparente Verteilung:** Der Händler/Entwickler behält den Großteil des Umsatzes (96 %), **2 %** fließen in den zentralen Core-/Plattform-Betrieb (Mario Berg), und **1–2 %** gehen direkt an dich als Multiplikator/Übersetzer. Null Fixkosten, maximale Fairness.
+
+---
+
+## 🤖 Einbindung als AI-Skill
+
+Um deinen KI-Assistenten (Google Gemini, Claude, GPT-4, Cursor) zu trainieren, MOND-Module fehlerfrei nach Standard zu schreiben:
+
+1. Nutze die Datei `SKILL.md` oder die `llms.md` als Custom Instruction oder Systemprompt.
+2. Beziehe das Korrektur-Layer (`DEV_CORRECTION_LEDGER.md`) mit ein, um plattformspezifische Parser-Crashes (z. B. auf Termux) auszuschließen.
+3. Der Assistent generiert ab sofort zu 100 % konformen MOND-Code ohne Kürzungs-Artefakte oder Syntax-Fehler.
+
+---
+
+## 📦 Lizenz & PayHub
+
+Entwickelt von **Mario Berg**.  
+Copyright: © Mario Berg (MOND.TV). Alle Rechte vorbehalten.  
+Offizielles Lizenz- und Payment-Gateway: [https://mond.tv/payhub](https://mond.tv/payhub)
+
+---
+
+## DEV-STANDARDS (DEV_STANDARDS.md)
+
+# MOND Framework: Developer & AI Standards (Master SSOT)
+**Version:** 3.4.0 (2026 - Master Blueprint SSOT & Library Registry)  
+**Urheberrecht & Marke:** Copyright © 2026 Mario Berg (MOND.TV). Alle Rechte vorbehalten.  
+**Geltungsbereich:** Verbindliche Richtlinie für alle menschlichen Entwickler und KI-Codegeneratoren.
+
+---
+
+## 1. Architektonische Prinzipien & Autarkie-Gebot
+
+* **Moduläre Autarkie (Regel 17):** Jedes Modul muss in der Lage sein, völlig unabhängig von externen Abhängigkeiten mit lokalen Fallschirmen (`mond_img()`, `load_db()`, `mond_base_url()`) auf beliebigen Fremdservern zu laufen, während es gleichzeitig Multi-Tenant- und Core-Master-Brücken unterstützt.
+* **Trennung der Anliegen (Separation of Concerns):** Die Kernsystemarchitektur (`hub/_core`) und kommerzielle Funktionswerkzeuge (`hub/_tools`, `hub/apps`) sind strikt voneinander getrennt.
+* **Lazy-Loading via `load_lib()` statt `require` (Regel 16):** Manuelle `require`- oder `include`-Befehle für Kernmodule verstoßen gegen die Portabilität. Module werden ausnahmslos über die sprechende Master-Methode `load_lib('modulname')` geladen. Bestehende `hub()`-Aufrufe werden über Core-Wrapper abgefangen und schrittweise migriert (Regel 41).
+* **MOND Tri-Gear Namenskonvention:** Jedes Modul synchronisiert formschlüssig seine vier Identitätsanker:
+  1. Verzeichnis (`hub/<name>/`)
+  2. Einstiegsdatei (`hub/<name>/<name>.php`)
+  3. Klassenname (`class Mond<CamelCaseName>`)
+  4. Architektur-Manifest (`dependencies.<name>.json`)
+
+---
+
+## 2. Universeller Einstiegspunkt & Routing-Regeln (MANDATORY)
+
+* **Ordner-Einstiegspunkte (`index.php`):** Jedes Modulverzeichnis MUSS den standardmäßigen MOND-Universal-Einstiegspunkt `index.php` als Gatekeeper enthalten. Dieser prüft dynamisch auf passende Engine-Dateien (`[folder_name].php`, `tool_[folder_name].php`) und zeigt bei unberechtigtem Direktzugriff die gesperrte 403-Verzeichniskarte an bzw. lädt den AI Module Creator. Niemals benutzerdefinierte 403-Stubs für Modul-Roots generieren.
+* **Pfad-Resilienz & Pathfinder (Regel 2):** Starre relative Pfadhacks wie `dirname(__DIR__) . '/_core'` sind strikt verboten. Pfade werden ausnahmslos über den 6-stufigen Pathfinder-Loop oder `mond_locate_cached_path()` aufgelöst.
+* **Bootloader-Zündung (Regel 21):** Jedes Modul muss am Dateianfang die 6-stufige Bootloader-Erkennung (`_bootloader.php`) einleiten, damit Core-Ressourcen (`load_lib()`, `MondLayout`, `MondAuth`) geladen werden können.
+* **Isolierte Weiterleitungsparameter & Anti-Loop-Standard (Regel 35):** Niemals `$_REQUEST` (z. B. `$_REQUEST['dev_tier']`, `$_REQUEST['action']` oder `$_REQUEST['redirect']`) in Verbindung mit HTTP-Weiterleitungen (`header("Location: ...")`) auswerten. Da `$_REQUEST` Cookies beinhaltet, erzeugen bestehende Session-Cookies bei bereinigten URLs fatale Endlosschleifen (`ERR_TOO_MANY_REDIRECTS`). Status- und Scope-Parameter müssen strikt isoliert über `$_GET` oder `$_POST` verarbeitet werden.
+
+---
+
+## 3. Mobile-First & Responsive UI-Richtlinien
+
+* **Zwingender Mobile Viewport (Regel 20):** Jedes autarke Modul und jede Standalone-Ansicht MUSS sicherstellen, dass vor jedem HTML-Rendering folgendes Meta-Tag im `<head>` steht:
+  ```html
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  ```
+* **Keine harten Breiten (Regeln 4 & 15):** Niemals feste Pixelbreiten (z. B. `width: 500px;` oder `max-width: 900px;`) auf Layout-Container, Modale oder Formulare anwenden. Stets die flüssige Klasse `.mond-wrap` mit `width: 100%; max-width: 100%; box-sizing: border-box;` nutzen.
+* **Standard-Navigation (Regel 3):** Modulköpfe nutzen den standardisierten Container `.mond-nav` mit Flexbox.
+* **Überschriften-Länge (Regel 10):** Modul-Titel (`<h1>` bis `<h4>`) dürfen maximal 45 Zeichen umfassen, um auf kleinen Smartphone-Displays horizontales Überlappen zu verhindern.
+* **Modal- & Overlay-Beschränkungen:** Modale müssen stets relative Breitenconstraints (z. B. `width: 95%; max-width: 400px;`) und `box-sizing: border-box;` nutzen.
+* **Hybrid-Styling & CSS-Tokenisierung:** Minimales Inline-CSS als Fallback für Standalone/Iframe bereitstellen, aber Master-Styling an `MondLayout` delegieren. Konsequente Nutzung von CSS-Variablen (`var(--mond-accent)`, `var(--mond-bg)`, `var(--mond-radius)`) statt fester Hex-Werte.
+* **Button-Ausrichtung (Button Alignment):** Formular-Submit-Buttons und primäre Aktionsschalter müssen stets über Flexbox rechtsbündig ausgerichtet werden:
+  ```css
+  display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
+  ```
+* **Verben-freier Button-Standard (Regel 25):** Aktions-Buttons DÜRFEN KEINE aktiven Verben enthalten (niemals "Cache leeren" oder "Sync starten"). Stets prägnante Nomen mit führendem Icon nutzen (z. B. `🧹 Cache Purge`, `📊 Speed-HUD`, `📡 Radar Sync`, `💾 Key-Sicherung`).
+* **Symmetrisches 2-Spalten Cyber-Grid (`.mond-grid-2`):** Mobile Werkzeug- und Aktionsbereiche rendern immer in einem 2-Spalten-Grid:
+  ```css
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; width: 100%; box-sizing: border-box;
+  ```
+* **Themen-Kapseln (`.mond-cyber-capsule`):** Verwandte Buttons in isolierte Kapseln mit einem 3px Akzentrand links gruppieren.
+* **Einzeilige Accordion-Summaries (Max. 18 Zeichen):** Alle interaktiven Toggle-Elemente (`<summary>` in `<details>`) müssen auf eine Zeile passen:
+  ```css
+  white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; display: block;
+  ```
+* **Ausgelagerte Infotexte & Erklärungen (Regel 39):** Wenn Infotexte (wie zum PayHub-Split 98%/2% oder Hilfe-Hinweise) viel Platz einnehmen, werden sie sauber in aufklappbare Detailboxen (`<details>` / `<summary>`) oder über Info-Icons (`ℹ️`) gekapselt, anstatt Layouts zu überfrachten oder unkommentiert entfernt zu werden.
+* **Responsive Flex-Reihen & Code-Wraps:** Standard-Aktionsreihen nutzen `display: flex; flex-wrap: wrap; gap: 8px;`. Alle `<pre>`, `<code>` und Dateipfade müssen mobil umbrechen (`word-break: break-all; white-space: pre-wrap;` oder Container mit `overflow-x: auto;`).
+
+---
+
+## 4. Datenbankverwaltung & Anmeldeinformationssicherheit
+
+* **Zentraler DB-Zugriff (Regel 5):** Manuelle `CREATE TABLE`-Befehle sind untersagt. Tabellen-Migrationen werden zur Laufzeit transparent über `MondDbManager::autoHeal()` durchgeführt.
+* **Direktes PDO-Verbot & EMS-Autohealing (Regel 36):** Die direkte Instanziierung von `new PDO(...)` in Anwendungsmodulen ist untersagt. Autarke Module nutzen ausnahmslos die sprechende Master-Methode `load_db('modulname')`. Alte `hub_db()`-Aufrufe werden über Core-Brücken gestützt und migriert (Regel 42). Komplexe Core-Module binden `MondDbManager::getConnection()` ein, um automatisches PRAGMA Schema-Healing über die `EMS_PDO`-Klasse zu nutzen.
+* **I/O-Preflight & Schreibrechte-Sicherung (Regel 34):** Ungeschütztes `@file_put_contents()` ohne vorherige Prüfung oder Fehlerbehandlung ist untersagt. Dateioperationen müssen vorab `is_writable()` auf Datei und Ordner prüfen oder über `MondErrorHandler::writeFileSafe()` gekapselt werden, um stumme Schreibfehler und Datenverlust zu verhindern.
+* **Safeguard-Durchsetzung:** Alle lokalen Datenbank- und Speicherverzeichnisse (`db/`) durch `MondSafeguard::protectDir()` und `.htaccess` (`Deny from all`) schützen.
+* **Archiv-Falle & Zeitstempel (Regel 18):** Das native `ZipArchive::extractTo()` ist verboten, da es Datei-Zeitstempel überschreibt. Entpackungen erfolgen über `mond_unzip()`, um historische Erstellungsdaten zu erhalten.
+
+### 4.1 Credential-Management & Local-First Key Vault (.env / db/ PHP-Vault)
+* **Zero Credentials im Quellcode oder Klartext-JSON:** Sensible Passwörter, API-Keys (z. B. Gemini-Keys) und Salts dürfen niemals unverschlüsselt im Quellcode oder in öffentlichen JSON-Dateien im Webraum landen. JSON-Dateien können bei fehlerhaften Server-Konfigurationen im Klartext heruntergeladen werden.
+* **Local First Key Architecture (`db/local_api.php`):**
+  * **Lokaler Fallback (Tier 1):** API-Schlüssel werden primär in einer separaten PHP-Datei im geschützten `db/`-Ordner gespeichert (z. B. `db/local_api.php` mit `return ['gemini_api_key' => '...'];`). Da PHP-Dateien vom Webserver nur interpretiert und niemals als Quellcode ausgeliefert werden, sind Keys hier selbst bei unzureichendem Ordnerschutz abgesichert.
+  * **Zentraler Vault (Tier 2):** Erst wenn der lokale PHP-Vault keinen Key bereitstellt, erfolgt die Abfrage über den zentralen SQLite-Vault (`ai_guard_vault.sqlite`).
+* **Unveränderliche Core-Anker:** Hartcodierte Notfall-Rettungstoken im Auth-Core bleiben als unverbrüchliche Bypass-Ressourcen im PHP-Code erhalten.
+
+### 4.2 Zentraler Code-Schutz & Verpackung (MondSafeguard)
+* **Universeller Export-Standard:** Modul-Downloads und ZIP-Archive dürfen niemals über rohen, ad-hoc `ZipArchive`-Code erstellt werden.
+* **Durchsetzung:** Alle Verpackungs- und Distributionsroutinen müssen über `MondSafeguard::exportZip($sourceDir, $moduleName, $shouldObfuscate)` laufen.
+* **Automatisierte Verschleierung:** Für Gäste und nicht autorisierte Nutzer (`authLevel < 2`) werden alle exportierten PHP-Dateien on-the-fly verschleiert (`gzcompress` + Base64-Eval-Wrapper).
+* **Integritätsgarantie:** Rohe Quelldateien verbleiben ausschließlich auf dem Host-Server.
+
+---
+
+## 5. Einheitliche Lokalisierungs- und Dokumentenarchitektur (SSOT)
+
+* **Architektur-Manifest (`dependencies.<modulename>.json`):** Pflichtdatei für jedes Modul. Enthält Metadaten für Routing, Discovery und Synergien: `module`, `version`, `relative_path`, `autarkic`, `dependencies`, `synergies`. Der Schlüssel `relative_path` definiert die kanonische Route.
+* **Modul-Konfiguration (`<modulename>.json` / Regel 7):** Rein fachliche Konfiguration für betriebliche Einstellungen, Schalter, Endpunkte und Schwellenwerte. Striktes Verbot von Sprachinhalten oder UI-Texten in dieser Datei!
+* **Die einzige Übersetzungsmethode `tl()` (Regel 24 & Regel 43):** Jede Textausgabe und jeder UI-String wird ausnahmslos über die universelle Funktion `tl('key', 'Standardtext')` aufgelöst. Veraltete Synonyme (`xl_trans()`, `xs_param()`) sind untersagt und werden vom Linter als Legacy-Warnung markiert (Regel 43). Die Kaskade löst auf von Admin-Overrides (`i18n_delta_prio_overrides.json`) über Modul-Wörterbücher (`i18n_prio_words.json`), Notanker (`$local_words_fallback`), Core-Spezialisten (`i18n_lang_[code].json`), Generalisten-Puffer (`i18n_xs_lang_mix.json`) bis zu Inline-Seed-Daten.
+* **Verbindliche Nomenklatur (`i18n_*` / Regel 23):** Alle Lokalisierungsdateien beginnen mit dem Präfix `i18n_`.
+* **Dual-Engine Dokumentenarchitektur (`tl_md` / Regel 26):** Lange Texte (>= 3 Sätze) niemals in JSON quetschen! Ladevorgang von `.html` oder `.md` via `tl_md('DOC#section')` mit Sektions-Ankern.
+* **Anti-Stripping & Gletscher-Protokoll (Inkl. Transparenzgebot / Regel 37):** Strenges Kürzungsverbot. Niemals Code-Kürzungen oder Platzhalter wie `// ... rest of code` ausgeben. Wenn Code im Zuge von Updates angepasst, gekürzt oder logische Blöcke in JSON-/i18n-Dateien ausgelagert werden, ist die KI verpflichtet, dies **proaktiv, unaufgefordert und detailliert im Begleittext zu erklären**.
+
+### 5.1 URL-Tuner Text-Parametrisierung (MANDATORY)
+Alle sichtbaren UI-Texte, Beschriftungen und Erklärungen MÜSSEN zwingend über die zentrale Hilfsfunktion `tl('eindeutiger_key', 'Deutscher Standardtext')` gekapselt werden. Es dürfen keine harten Strings im HTML stehen. Diese Kapselung stellt sicher, dass Texte über die URL-Parameter `?edit=1` per Inline-Editor veränderbar und über `?dev=1` auslesbar sind.
+
+### 5.2 Zero Hardcoded UI Strings Policy, Key-Nested i18n & Data Normalization (Regel 32)
+* **Vollständige Parametrisierung:** Jedes einzelne sichtbare UI-Element (App-Titel, Überschriften, Kacheln, Formularlabels, Buttons und Menüleisten) MUSS zwingend über die Kaskaden-Funktion `tl()` angebunden werden.
+* **Verbot hardcodierter Texte:** Im HTML-Rendering dürfen niemals rohe, unübersetzte Texte stehen.
+* **Mandatory Key-Nested I18N Format (`i18n_prio_words.json`):** 
+  * Alle Modul-Übersetzungen MÜSSEN ausnahmslos im Key-Nested Format vorliegen: `{"module": "...", "version": "1.0.0", "translations": {"key": {"de": "...", "en": "..."}}}`.
+  * Bei der Erstellung oder Modifikation jeder App MUSS die zugehörige `i18n_prio_words.json` mit allen erforderlichen Schlüsseln und den Standard-Sprachen vollständig mitgeneriert und bereitgestellt werden.
+* **Migration & Data Normalization:** Abweichende, alte oder mehrdimensionale JSON-Strukturen (wie Legacy-Sprachdateien oder komplexe IoT-Telemetriedaten) müssen über den universellen **Data Normalizer & Schema Mapper** (`tool_i18n_json_migrator`) rekursiv in das saubere M.O.N.D.-Standardformat normalisiert werden.
+
+### 5.3 Linter-Regel-Governance & KI-Lieferprotokoll
+Neue Linter-Regeln müssen von KIs und Generatoren zwingend als isoliertes JSON-Objekt mit führendem Komma ausgegeben werden (`,\n  {\n    "id": n, ...\n  }`). Dies stellt sicher, dass neue Regeln ohne manuelle Syntax-Korrekturen direkt vor die schließende Klammer `]` der Master-Spezifikation (`dev_standards_derived_rules.json`) angehängt werden können.
+
+---
+
+## 6. PHP-Coding-Standards & 2-Ebenen-Architektur (Strikte KI-Direktiven)
+
+* **2-Ebenen-Architektur & Early-Return Guard (Regel 33):** Zur Vermeidung von unerwünschten Parse-Fehlern, Einkapselungsproblemen und unmatchten geschweiften Klammern am Dateiende verlangen MOND-Module eine strikte **2-Ebenen-Struktur**:
+  * **Ebene 1 (Ganz oben):** Sämtliche Hilfsfunktionen, Klassen, Datenbankinstanzierungen, cURL-Schnittstellen und AJAX-API-Handler werden auf Spalte 0 definiert.
+  * **Ebene 2 (Die Guard Clause):** Nach den Kernfunktionen prüft ein präziser Early Return, ob die Datei direkt oder indirekt aufgerufen wurde:
+    ```php
+    $mondScriptPath = isset($_SERVER['SCRIPT_FILENAME']) ? str_replace('\', '/', (string)$_SERVER['SCRIPT_FILENAME']) : '';
+    $isDirect       = ($mondScriptPath === str_replace('\', '/', __FILE__) or $mondScriptPath ===$selfDir . '/index.php');
+
+    if (!$isDirect) { 
+        return; 
+    }
+    // Ab hier frei fließender HTML/UI-Render-Code auf Spalte 0 ohne umschließende Klammer am Dateiende!
+    ```
+* **Keine Minifizierung / kein Squeeze:** Niemals HTML, JS oder PHP in einzelne Zeilen komprimieren. Stets vollständige, lesbare Dateien ausgeben.
+* **Funktions- und Klassen-Guards:** Jede globale Hilfsfunktion MUSS in `if (!function_exists('...'))` und jede Klasse in `if (!class_exists('...'))` gekapselt sein.
+* **ASCII-Resilienz & Pipe-Verbot (Regeln 13 & 14):**
+  * In PHP-Ausdrücken ausnahmslos textuelle Operatoren `and` und `or` statt `&&` oder `||` nutzen (verhindert LaTeX-Fehler wie `\vert` durch Parser).
+  * In JavaScript-Blöcken ausnahmslos `&&` und `||` sowie ternäre Operatoren nutzen (niemals die PHP-Wörter `and` oder `or`).
+  * Bitwise-Pipes sind verboten; es gelten vorberechnete Integer: `192` (Pretty+Slashes) oder `448` (+Unicode) für `json_encode`, `8` (CREATE / OVERWRITE) für `ZipArchive::open`.
+* **Nowdoc-Zwang für Code-Generatoren:** Mehrzeilige Template-Generatoren müssen zwingend Nowdoc (`<<<'CODE_TPL'` + `strtr`) nutzen. Das End-Tag (`GATE_TPL;`) muss bündig auf Spalte 0 am linken Zeilenrand stehen.
+* **Termux & Shell-Resilienz:** Niemals rohe Unicode-Emojis in PHP-Strings oder Arrays einbetten. Emojis gehören ausschließlich in HTML-Templates oder als HTML-Entities (`&#10024;`, `&bull;`).
+* **Parser-Sicherheit für JS (Regeln 22 & 27):** Niemals rohe XML-Tags (`<?xml`) oder unmaskierte Starttags direkt in JavaScript-Strings oder `<script>`-Blöcken verwenden. Zwingend per String-Konkatenation trennen (`'<' + '?xml'`, `'<' + '?php'`).
+* **Lexer-Schutz (Regel 30):** In Kommentaren (`//` oder `/* */`) und Header-Texten darf NIEMALS das literale Zeichenpaar `?` gefolgt von `>` verwendet werden. Dies beendet den PHP-Modus sofort und degradiert Folgezeilen zu HTML-Text! Immer umschreiben als PHP-Endtag oder `? >` mit Leerzeichen.
+* **cURL-Payload Isolation (Regel 31):** Mehrfach verschachtelte Request-Arrays (für Gemini, Claude, Mistral) dürfen NIEMALS als Inline-Einzeiler in `curl_setopt()` übergeben werden. Zwingend vorab als `$payloadData = [...]` deklarieren, um fatale Klammerzählfehler (`Unclosed '{' does not match ')'`) auszuschließen.
+* **JS-Klammer & Fetch-Kapselung (Regel 28):** Komplexe `fetch()`-Aufrufe mit geschweiften Klammern in Inline-JS müssen gekapselt werden, um Puffer-Kollisionen zu vermeiden.
+* **Header-String-Integrität (Regeln 9 & 29):** Der Dateikopf (Zeilen 1–20) verlangt den Urheberrechts-Header `Copyright © [0-9]{4} Mario Berg (MOND.TV)` und verbietet unmaskierte einfache Anführungszeichen in beschreibenden Kommentarzeilen.
+* **Smart Degradation (Regel 11):** Global gerenderte UI-Elemente müssen ihren Render-Status über `static $alreadyRendered = false;` verfolgen und bei Zweitaufrufen einen Leerstring zurückgeben (verhindert doppelte Formular-IDs).
+* **Asynchrones Error-Catching:** Browser-APIs (WebAuthn, WebSpeech, Fetch) müssen ausnahmslos in `try/catch` gewrappt werden und Fehler diagnostisch in einem UI-Error-Log ausgeben.
+
+### 6.1 Zero AI Artifact Policy (Regel 1)
+* **Strikte Verbotstoken:** Niemals interne KI-Zitationsfragmente, eingeklammerte Span-Marker oder Anchor-Tags (`[span_...]`) in ausgegebenen Codedateien belassen.
+* **Syntax-Integrität:** Ausgegebener Code muss 100 % valides PHP sein (`php -l` Exit-Code 0).
+
+### 6.2 6-Backtick-Standard für Master-Dokumente (Regel 38)
+* Wenn vollständige Markdown-Master-Dokumente (wie `DEV_STANDARDS.md`) oder komplexe Skripte mit inneren Code-Blöcken im Chat ausgegeben werden, MÜNDEN und ENDEN diese ausnahmslos in **sechs Backticks** (` ``````markdown ` bzw. ` ``````php `). Dies verhindert Parser-Kollisionen und unvollständige Formatierungen in mobilen Apps.
+
+---
+
+## 7. Zentralisierter Fallback & Bypass-UI
+
+* **Keine eigenen Bypass-Menüs (Regel 12):** Eigene `renderLoginForm()`-Aufrufe in Modulen sind verboten. Alle administrativen Fallbacks werden über Core-Dienste (`MondLayout::renderBypassMenu()`) gerendert.
+* **Inhaltsunterdrückung (Regel 8):** Inhalte gesperrter Stufen dürfen niemals im HTML-Quellcode für Gäste auftauchen (`if ($authLevel >= X)`). Nur Super-Admins oder Localhost erhalten Zugriff auf den schnellen Stufenwechsel (`?dev_tier=0..3`).
+
+---
+
+## 8. MOND 4-Tier Hybrid UI Standard
+
+* **Stufe 0 (Gast / Showcase):** Blau (`#1f6feb`, Header `#58a6ff`). Interaktive Demos, Speed-HUD, Buy-Links.
+* **Stufe 1 (Client / Basis):** Grün (`#238636`, Header `#7ee787`). Nutzer-Tools, Tool-Kapseln.
+* **Stufe 2 (Pro / Setup):** Bernstein (`#d29922`, Header `#e3b341`). Admin-Werkzeuge, 2-Spalten Cyber-Grids.
+* **Stufe 3 (Admin / Kernel):** Violett/Rot (`#8957e5` / `#da3633`, Header `#a371f7`). System-Logs, SQLite-Wartung.
+* **Master-Layout Wrapper (Regel 19):** Am Dateiende muss `MondLayout::renderHtml()` aufgerufen werden, um Shell, Header und Footer einzublenden.
+
+### 8.1 UI State Preservation (Zero-JS in Submodulen / Regel 6)
+* **Verbot lokaler State-Hacks:** Einzelmodule dürfen KEINEN eigenen JavaScript-Code oder Session-Logiken schreiben, um das Auf- und Zuklappen von `<details>`-Akkordeons oder Sub-Tabs nach Formular-POSTs zu verwalten.
+* **Zentraler State Sentinel (MondLayout):** Der Erhalt von UI-Zuständen wird exklusiv über `layout.php` gesteuert:
+  * Stufen-Akkordeons erhalten `class="mond-tier-accordion"` und `data-tier="[0..3]"`.
+  * Sub-Reiter nutzen `data-mond-tab="[name]"`.
+  * `MondLayout` persistiert den Status über `localStorage` gebunden an `location.pathname` und stellt aktive Tabs nach dem Neuladen automatisiert wieder her.
+
+### 8.2 Form Handling & DOM-Manager (FormTuner) Governance
+* **Standard-Formulare (Zero-JS-Post):** Normale Formulare werden als reguläre `<form method="POST">`-Container angelegt. Der globale DOM-Manager (FormTuner) fängt sie automatisch per AJAX ab und triggert die Glow-Animation (`form-tuner-glow`).
+* **Steuerungs- & Scope-Formulare (`class="no-ajax"`):** Formulare, die Ansichtsstatus, Filter oder Suchbereiche steuern und einen echten Seiten-Reload erfordern, werden mit `class="no-ajax"` gekennzeichnet.
+* **Vollautonome Module (`data-dom-ignore="true"`):** Module mit eigener AJAX-Pipeline kennzeichnen ihren Haupt-Wrapper mit `data-dom-ignore="true"`, um Submit-Events vor dem FormTuner zu isolieren.
+* **Download- & Stream-Sicherheit:** ZIP-Exporte und Downloads dürfen niemals per AJAX abgefangen werden. Download-Links müssen als GET-Links oder mit `class="no-ajax"` deklariert sein.
+* **Universelle Pfad-Traversierung:** Pfade zu Root- oder Nachbarmodulen dürfen niemals starr verdrahtet sein. Die Pfadermittlung muss dynamisch über die Parent-Schleife (`for ($i=0; $i<5; $i++)`) erfolgen.
+
+### 8.3 MOND Matrix UI & Digital Signage API (Regel 40 / MANDATORY)
+* **1-Klick / 2-Klick Interaktion (`.mond-auto-unroll`):** Untergeordnete Befehle (Buttons, Terminals, Code-Blöcke) innerhalb einer Stufe MÜSSEN in ein geschachteltes `<details class="mond-auto-unroll">` gekapselt werden. Dies erzwingt auf Smartwatches (Nano-Displays) einen 2-Klick-Schutz und entrollt sich ab 1024px automatisch zu einer 1-Klick-Fläche.
+* **Single-Line Limit (18 Zeichen):** Akkordeon-Header (`<summary>`) dürfen maximal 18 Zeichen (inkl. Emojis) umfassen. Längere Erklärungen gehören als `<p>` in den Body.
+* **Digital Signage Parameter:** Viewport-Steuerung erfolgt rein über die URL: `?sichtfeld=mond` (Aliase: `fov=moon`, `vid=wall`), `?view=raw` (Kiosk-Modus ohne Rahmen) und `?refresh=60` (Hardware-Reload zur Speicherentlastung).
+
+---
+
+## 9. Modulare Dateiarchitektur & 11-Säulen-Standard (MANDATORY)
+
+Jedes autarke Modul in `hub/<modulename>/` besteht zwingend aus folgenden 11 Säulen für 100%ige Standalone-Lauffähigkeit auf jedem fremden Server:
+
+1. `index.php` **(Universal Gatekeeper):** Rekursiver 2-Stufen-Gatekeeper mit Fallback.
+2. `<modulename>.php` **(Main Engine):** 4-Tier Blueprint Engine mit nativer Core-Anbindung und 2-Ebenen Guard.
+3. `dependencies.<modulename>.json` **(Architecture Manifest):** Discovery, Routing (`relative_path`), Autarkie und Synergien.
+4. `<modulename>.json` **(Technical Configuration):** Reine Betriebsparameter, Schwellenwerte, Stripe-Connect-ID und Pricing (keine UI-Texte).
+5. `i18n_prio_words.json` **(Lokalisierungs-Wörterbuch):** Key-Nested Übersetzungen für de, en, it, fr, es, nl.
+6. `assets/logo.png` **(Branding Image):** Autarke 32x32 Base64-Pixelgrafik.
+7. `assets/logo.svg` **(Vektormarke):** Vektorgrafik des MOND-Emblems.
+8. `mail/mail_order_de.html` & `mail/mail_order.html` **(Transaktions-Mails):** HTML-E-Mail Vorlagen für Bestellbestätigungen.
+9. `tpl/receipt.html` **(DIN-A4 Beleg):** Druckfertige Rechnung nach PAngV mit Print-Stylesheet.
+10. `tpl/cert.html` **(Lizenz-Urkunde):** Offizielles Lizenz-Zertifikat mit Token-Badge.
+11. `tpl/success.html` **(Dankesseite):** Checkout-Rückleitung & `db/.htaccess` (Safeguard-Schutz: `Deny from all`).
+
+---
+
+## 10. Das 43-Regel-Saldo-Register (1:1 Linter-Parität zu `dev_standards_derived_rules.json`)
+
+| ID | Regel-Name | Typ | Severity | Beschreibung / Linter-Ziel |
+|---:|:---|:---:|:---:|:---|
+| **1** | Zitations-Artefakte | Auto | Critical | Entfernt KI-Zitationsfragmente (`[span_...]`). |
+| **2** | Starre Pfade | Auto | Warning | Ersetzt starre Relativpfade durch den Pathfinder-Loop. |
+| **3** | Navigationspfeiler | Auto | Warning | Erzwingt den `.mond-nav` Flexbox-Header. |
+| **4** | Starrer 900px Container | Auto | Warning | Ersetzt feste Breiten durch responsive `.mond-wrap`. |
+| **5** | DB-Routine Auto-Heal | Manuell | Warning | Verlegt `CREATE TABLE` in `MondDbManager::autoHeal()`. |
+| **6** | Accordion State Cache | Auto | Warning | Speichert Akkordeon-Zustände im LocalStorage. |
+| **7** | JSON-Anbindung | Manuell | Warning | Erzwingt `<modulename>.json` für autonome Konfiguration. |
+| **8** | 4-Tier Korsett | Manuell | Warning | Prüft die Berechtigungsstufen (`$authLevel >= X`). |
+| **9** | MOND-Header | Manuell | Error | Verlangt den Standard MOND.TV Urheberrechts-Header. |
+| **10** | Überschrift > 45 Zeichen | Manuell | Warning | Begrenzt Überschriften für mobile Viewports auf 45 Zeichen. |
+| **11** | Doppeltes Login-Formular | Manuell | Error | Verhindert doppelte `renderLoginForm()`-Aufrufe. |
+| **12** | Lokaler Login-Key | Manuell | Critical | Verbietet isolierte Login-Menüs (Core-Bypass nutzen). |
+| **13** | Polyglott JS-Konflikt | Auto | Critical | Verbietet `or`/`and` in JavaScript (nur `\|\|` & `&&`). |
+| **14** | Bitwise Pipe in json_encode | Auto | Warning | Ersetzt Bitwise-Pipes in PHP durch Integer-Bitmasks (`192`). |
+| **15** | Fester Container (Mobil-Fix) | Auto | Warning | Wandelt harte Pixel-Maximalbreiten in `100%`. |
+| **16** | Manuelles require/include | Manuell | Warning | Ersetzt harte `require`-Aufrufe durch Lazy-Loading via `load_lib()`. |
+| **17** | Autarkie-Gebot | Manuell | Critical | Erzwingt Fallschirm-Methoden (`mond_img`, `load_db`). |
+| **18** | Archiv-Falle (ZIP ExtractTo) | Manuell | Critical | Verbietet `extractTo()` wegen Timestamp-Verlust; nutzt `mond_unzip()`. |
+| **19** | Master-Layout Wrapper | Manuell | Error | Verlangt `MondLayout::renderHtml()` am Dateiende. |
+| **20** | Fehlender Mobile-Viewport | Manuell | Error | Verlangt `<meta name="viewport"...>` im HTML-Head. |
+| **21** | Bootloader-Zündung | Manuell | Critical | Verlangt `_bootloader.php` am Dateianfang. |
+| **22** | Parser-Falle (PHP in JS) | Manuell | Critical | Verbietet rohes `<?php` in `<script>`-Blöcken. |
+| **23** | i18n_ Nomenklatur-Standard | Manuell | Warning | Erzwingt das Präfix `i18n_` für alle Sprachdateien. |
+| **24** | Einzige Übersetzungsmethode (tl Standard) | Manuell | Critical | Erzwingt die Einbindung der universellen `tl()`-Funktion. |
+| **25** | Verben-Verbot auf Buttons | Manuell | Warning | Verbietet reine Verben auf Aktions-Schaltern (Nomen + Icon nutzen). |
+| **26** | Dual-Engine & Sektions-Anker | Manuell | Warning | Erzwingt `tl_md()` für Fließtexte ab 3 Sätzen. |
+| **27** | XML-Deklarations-Schutz | Manuell | Critical | Verbietet unmaskiertes `<?xml` in JS-Strings. |
+| **28** | JS-Klammer & Fetch-Kapselung | Manuell | Warning | Kapselt komplexe Fetch-Requests in Inline-JS. |
+| **29** | Header-String-Integrität | Manuell | Warning | Verbietet unmaskierte einfache Anführungszeichen in Kopfkommentaren. |
+| **30** | Lexer-Schutz | Manuell | Critical | Verbietet das Zeichenpaar `?` `>` in Kommentaren. |
+| **31** | cURL-Payload Isolation | Manuell | Warning | Erzwingt Auslagerung verschachtelter cURL-Arrays in `$payloadData`. |
+| **32** | Zero Hardcoded UI Strings | Manuell | Error | Zwingt alle UI-Texte in `tl()` und verlangt `i18n_prio_words.json`. |
+| **33** | 2-Ebenen Early-Return Guard | Auto | Critical | Erzwingt 2-Ebenen-Aufbau und `if (!$isDirect) return;` Guard. |
+| **34** | Ungesicherter Dateischreibvorgang | Manuell | Warning | Verlangt vorab `is_writable()` oder `MondErrorHandler::writeFileSafe()`. |
+| **35** | Unsichere Redirect-Parameter | Manuell | Critical | Verbietet `$_REQUEST` bei Redirects (verhindert Cookie-Loops). |
+| **36** | Direktes PDO (Architektur-Kapselung) | Manuell | Warning | Verbietet `new PDO()`; verlangt `load_db()` oder `MondDbManager::getConnection()`. |
+| **37** | Transparenz- & Erklärungspflicht | Manuell | Warning | Verpflichtet die KI, Code-Kürzungen oder Datei-Auslagerungen unaufgefordert zu begründen. |
+| **38** | 6-Backtick-Standard | Manuell | Warning | Verlangt den 6-Backtick-Container für Master-Dokumente im Chat. |
+| **39** | Ausgelagerte Infotexte (UI-Kompaktheit) | Manuell | Warning | Erzwingt aufklappbare Detailboxen (`<details>`) oder Info-Icons für umfangreiche Erklärtexte. |
+| **40** | Digital Signage & Matrix UI | Manuell | Warning | Erzwingt `.mond-auto-unroll`, 18-Zeichen-Summaries und Sichtfeld-URL-Kompatibilität (`?sichtfeld=`, `?refresh=`). |
+| **41** | Veralteter hub()-Aufruf (Legacy Migration) | Auto | Warning | Veralteter `hub()`-Aufruf erkannt. Schrittweise auf `load_lib()` migrieren. |
+| **42** | Veralteter hub_db()-Aufruf (Legacy Migration) | Auto | Warning | Veralteter `hub_db()`-Aufruf erkannt. Schrittweise auf `load_db()` migrieren. |
+| **43** | Veraltete Übersetzungsmethode (Legacy Migration) | Manuell | Warning | Veraltete Methoden (`xl_trans`, `xs_param`) erkannt. Auf einheitlichen `tl()`-Standard migrieren. |
+
+---
+
+## 11. MOND Core Services & Library Registry (load_lib)
+
+Lade interne MOND-Dienste ausnahmslos über `load_lib('<service>')` (niemals manuelles `require` oder `include`).
+
+### 1. auth_sso_mail (E-Mail & Messaging Backbone)
+- **Laden:** `load_lib('auth_sso_mail');`
+- **Mail versenden:** 
+  `mond_send_mail(string $to, string $subject, string $messageHtml, array $options = []): array`
+- **Optionen ($options):**
+  - `'embedded_images' => ['logo' => '/pfad/zu/bild.png']` (oder Fallback auf `cid:logo`)
+  - `'reply_to'        => 'support@mond.tv'`
+  - `'cc'              => ['team@domain.de']`
+  - `'attachments'     => ['/pfad/zu/datei.pdf']`
+  - `'string_attachments' => [['data' => $binData, 'name' => 'beleg.pdf']]`
+- **Rückgabe:** `['success' => bool, 'transport' => string, 'error' => string]`
+
+### 2. auth_crm (Kunden, Bestellungen & Lizenz-Zertifikate)
+- **Laden:** `load_lib('auth_crm');`
+- **Kunde abrufen:** `MondCrm::getCustomer(string $userId): ?array`
+- **E-Mail aktualisieren:** `MondCrm::updateCustomerEmail(string $userId, string $email): bool`
+- **Bestellung via Token prüfen:** `MondCrm::getOrderByToken(string $token): ?array`
+- **Lokale Druck-Vorlagen:** Greift automatisch auf modullokale Templates in `tpl/receipt.html`, `tpl/cert.html` und `tpl/delivery_slip.html` zu.
+
+### 3. auth (PassSuite & Berechtigungs-Stufen)
+- **Laden:** `load_lib('auth');`
+- **Berechtigungsstufe ermitteln:** `MondAuth::getLevel(): int` (0 = Gast, 1 = Client, 2 = Pro, 3 = Admin)
+- **Login-Formular ausgeben:** `MondAuth::renderLoginForm(): string`
+
+### 4. layout (Zentrales Shell-Rendering)
+- **Laden:** `load_lib('layout');`
+- **Standard-Ausgabe:** 
+  `MondLayout::renderHtml(['title' => string, 'calling_dir' => __DIR__, 'body' => string]);`
+- **Header / Footer getrennt:**
+  - `MondLayout::renderHeader(string $title, string $dir);`
+  - `MondLayout::renderFooter(string $dir);`
+
+### 5. db_manager & SQLite-Infrastruktur
+- **Autarke Verbindung:** `load_db(string $modulName): ?PDO`
+  - Erzeugt automatisch das Verzeichnis `/db` und schützt es via `.htaccess` (`Deny from all`).
+  - Setzt Busy-Timeout standardmäßig auf 5.000 ms.
+- **Auto-Healing Tabellenaufbau:** 
+  `MondDbManager::autoHeal(PDO $pdo, string $tableName, array $columnsDefinition);`
+
+### 6. Universelle UI-, Commerce- & Lokalisierungs-Helfer
+- **Übersetzung (6 Sprachen):** `tl(string $key, string $defaultSeed = ''): string`
+- **Asset-/Bilder-Finder:** `mond_img(string $filename): string` (priorisiert `assets/` vor System-Assets)
+- **Modul-URL-Resolver:** `mond_modul_url(string $slug): string` (saubere dynLink/Pathfinder-Auflösung)
+- **Product Hub & Link-Matrix:** `MondProductHub::buildLinkMatrix(array $product, string $payhubUrl): array`
+- **PayHub Checkout-Link:** `[https://mond.tv/pay?buy=](https://mond.tv/pay?buy=){sku}&amount={price}&interval={lifetime|30d}&vendor={stripe_id}`
+
+---
+
+## DEV-CORRECTION-LEDGER (DEV_CORRECTION_LEDGER_de.md)
+
+# MOND Kletterprotokoll (AI Correction Ledger)
+Version: 1.0.0 (2026)
+Status: INVARIANT DIRECTIVES
+
+Dieses Protokoll dokumentiert alle plattformspezifischen Hürden und Korrekturen, die zwingend bei JEDER Code-Generierung beachtet werden müssen, um Crashes auf Termux/Linux zu verhindern.
+
+## 1. Termux- & Android-Shell-Resilienz (FATAL CRASH VORBEUGUNG)
+- Problem: Termux bricht bei Sonderzeichen, Pipes und Emojis in PHP-Strings mit Syntaxfehlern ab (z. B. "unexpected fully qualified name '\wert'").
+- Regel 1 (Keine Logik-Pipes): Statt "||" immer "or", statt "&&" immer "and" nutzen.
+- Regel 2 (Keine Bitwise-Pipes): Niemals "JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES" schreiben. Ausnahmslos den fertigen Integer-Wert 192 verwenden.
+- Regel 3 (Zip-Flags): Niemals "ZipArchive::CREATE | ZipArchive::OVERWRITE" schreiben. Ausnahmslos den Integer-Wert 8 verwenden.
+- Regel 4 (Keine Emojis im PHP-Code): Keine Emojis in Arrays, Statusmeldungen oder PHP-Strings. Emojis gehören ausschließlich in statisches HTML oder müssen als HTML-Entities (z. B. &#10024;) notiert werden.
+
+## 2. Vollständigkeits-Garantie (No Truncation)
+- Es dürfen niemals Abkürzungen wie "// ... rest of code" ausgegeben werden.
+- Jede Datei muss zu 100 % lauffähig und vollständig sein.
+
+## 3. Architektur-Treue (4-Tier Korsett)
+- Jedes Modul nutzt das 4-Tier Hybrid UI (Stufe 0 bis 3) mit einzeiligen <summary>-Titeln.
+
+---
+
+## LICENSE (LICENSE_de.md)
+
+# MOND Framework & Master Blueprint License
+Version: 2.0.0 (2026)
+Copyright © 2026 Mario Berg (MOND.TV). Alle Rechte vorbehalten.
+
+1. GEISTIGES EIGENTUM & URHEBERRECHT:
+Das MOND Framework, der Master-Blueprint, die 7-Tier Lokalisierungs-Architektur und das Gletscher-Protokoll sind urheberrechtlich geschützte Werke von Mario Berg (MOND.TV).
+
+2. GESTATTETE NUTZUNG:
+Entwickler und Anwender sind berechtigt:
+- Den AI-Skill (SKILL.md) und das Correction Ledger in persönliche oder betriebliche KI-Systeme zu laden.
+- Eigene Module und Satelliten-Anwendungen zu schreiben, die der Blueprint-Spezifikation v2.0.0 entsprechen.
+- Eigene Module kostenfrei oder kommerziell zu betreiben.
+
+3. EINSCHRÄNKUNGEN:
+- Der Quellcode des MOND-Kerns, der Master-Blueprint und die Markenidentität dürfen nicht ohne vorherige schriftliche Zustimmung als eigenes Framework rebrandet oder weiterverkauft werden.
+- Kommerzielle Enterprise-Nutzungen des Core-Hubs unterliegen der Lizenzierung über das offizielle MOND PayHub-Portal (https://mond.tv/payhub).
+
+4. HAFTUNGSAUSSCHLUSS:
+Die Bereitstellung erfolgt "wie besehen" (AS IS), ohne ausdrückliche oder stillschweigende Gewährleistung.
+
+---
+
+## SKILL-DIRECTIVES (SKILL_DIRECTIVES_de.md)
+
+---
+name: mond-module-builder
+description: Generiert und pflegt Produktions-Code nach dem MOND Master-Blueprint v2.0.0 für MOND.TV. Use when writing, refactoring, or linting MOND modules.
+---
+# MOND Module Builder Directive
+
+Generiere autarke, mobile-first Webanwendungen und PHP-Module streng nach den invarianten MOND Framework-Direktiven.
+
+## Invariante Standards & Regeln
+
+1. Polyglott-Syntax & Härtung (Correction Layer):
+   - PHP: Ausnahmslos 'and' und 'or'. Niemals '&&' oder '||'.
+   - JavaScript: Ausnahmslos '&&' und '||'. Niemals PHP-Wörter in Scripts.
+   - Bitwise-Pipes: Keine Pipes '|' in PHP. Nutze feste Integer: json_encode (192 oder 448), ZipArchive (8 oder 15).
+   - Emojis: Keine Emojis in PHP-Strings. Emojis gehören rein in HTML oder HTML-Entities.
+   - Parser-Schutz: Schreibe in JS niemals direkt '<?php' oder '?>'. Nutze '<' + '?php'.
+   - Gatekeeper: Nowdoc (<<<'GATE_TPL' + strtr) für Skript-Generierungen nutzen.
+
+2. Gletscher-Protokoll:
+   - 100% vollständigen, direkt lauffähigen Code ausgeben. Niemals Abkürzungen oder Platzhalter (`// ... rest of code`).
+
+3. 18-Zeichen Korsett & Cyber-Grid:
+   - Alle <summary>-Titel strikt einzeilig und max. 18 Zeichen lang (`white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;`).
+   - Werkzeugbereiche nutzen '.mond-grid-2' (repeat(2, 1fr)).
+   - Verben-Verbot: Buttons nutzen reine Nomen + Icon (z. B. `🧹 Cache Purge`).
+
+4. 7-Tier Lokalisierungs-Kaskade & Dual-Engine:
+   - UI-Fragmente über `tl('key', 'Seed Text')` laden.
+   - Lange Dokumente (>= 3 Sätze) über `tl_md('DOC#section')` aus `.html` oder `.md` laden.
+
+5. 4-Tier Architektur:
+   - Stufe 0: Showcase / Demo (inkl. PayHub-Link https://mond.tv/payhub für Gäste).
+   - Stufe 1: Basis-Werkzeuge.
+   - Stufe 2: Setup & Verwaltung.
+   - Stufe 3: Kernel & Audit-Logs.
+
+6. Universal Voice Contract:
+   - Fängt '?mond_voice=1' ab und liefert sauberes JSON mit 'speak'-Feld.
+
+---
+
+
+MD_STANDARDS_SEAL;
+
+if (!defined('MOND_STANDARDS_DOC')) {
+    define('MOND_STANDARDS_DOC', $STANDARDS_FALLBACK);
+}
+
+$AUTOPOIESE_TREE_JSON = <<<'MONDTREE_SEAL'
+{
+    "source_folder": "blueprint_file_input",
+    "lang_filter": "de",
+    "generated_at": "2026-11-16 07:31:06",
+    "dir_count": 3,
+    "file_count": 8,
+    "total_bytes": 71826,
+    "dirs": [
+        "assets",
+        "mail",
+        "tpl"
+    ],
+    "files": [
+        {
+            "path": "mail/mail_order_de.html",
+            "lang": "de",
+            "size": 305,
+            "md5": "eaac42f9f8b07770fca60394414ea9b6",
+            "content": "<!DOCTYPE html><html><body style=\"background:#0b0f19;color:#c9d1d9;font-family:sans-serif;padding:20px;\"><div style=\"background:#010409;padding:20px;border:1px solid #30363d;border-radius:6px;\"><h3 style=\"color:#38bdf8;\">Ihre MOND.TV Bestellung</h3><p>Ihr Modul ist freigeschaltet.</p></div></body></html>"
+        },
+        {
+            "path": "assets/hero_anim.svg",
+            "lang": "neutral",
+            "size": 780,
+            "md5": "183c2344626499a26e3287f552f40c2c",
+            "content": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 60\" width=\"120\" height=\"60\">\n  <defs>\n    <linearGradient id=\"glowGrad\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">\n      <stop offset=\"0%\" stop-color=\"#38bdf8\"/>\n      <stop offset=\"100%\" stop-color=\"#7ee787\"/>\n    </linearGradient>\n  </defs>\n  <circle cx=\"30\" cy=\"30\" r=\"16\" fill=\"url(#glowGrad)\">\n    <animate attributeName=\"r\" values=\"14;18;14\" dur=\"3s\" repeatCount=\"indefinite\"/>\n    <animate attributeName=\"opacity\" values=\"0.7;1;0.7\" dur=\"3s\" repeatCount=\"indefinite\"/>\n  </circle>\n  <path d=\"M 60 20 L 95 20 M 60 30 L 110 30 M 60 40 L 85 40\" stroke=\"#38bdf8\" stroke-width=\"3\" stroke-linecap=\"round\">\n    <animate attributeName=\"stroke-dasharray\" values=\"1,5;15,5;1,5\" dur=\"2.4s\" repeatCount=\"indefinite\"/>\n  </path>\n</svg>"
+        },
+        {
+            "path": "assets/logo.svg",
+            "lang": "neutral",
+            "size": 302,
+            "md5": "d8dd77b42bfeabc05126e16778f66641",
+            "content": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" width=\"64\" height=\"64\">\n  <circle cx=\"32\" cy=\"32\" r=\"30\" fill=\"#010409\" stroke=\"#38bdf8\" stroke-width=\"2\"/>\n  <path d=\"M 32 10 A 22 22 0 0 0 32 54 A 22 22 0 0 1 32 10 Z\" fill=\"#38bdf8\"/>\n  <circle cx=\"32\" cy=\"32\" r=\"6\" fill=\"#7ee787\"/>\n</svg>"
+        },
+        {
+            "path": "i18n_prio_words.json",
+            "lang": "neutral",
+            "size": 517,
+            "md5": "4e0f12b3d6e507a5ce542bedadd6da61",
+            "content": "{\n    \"module\": \"app_demo\",\n    \"version\": \"1.0.0\",\n    \"translations\": {\n        \"app_title\": {\"de\": \"MOND App Demo (12 Säulen Referenz)\", \"en\": \"MOND App Demo (12 Pillars Reference)\"},\n        \"t0_title\": {\"de\": \"Showcase & Entfaltung\", \"en\": \"Showcase & Deployment\"},\n        \"t1_title\": {\"de\": \"Kunden-Workspace\", \"en\": \"Client Workspace\"},\n        \"t2_title\": {\"de\": \"Setup & Parameter\", \"en\": \"Setup & Configuration\"},\n        \"t3_title\": {\"de\": \"Admin Vault & Schlüssel\", \"en\": \"Admin Vault & Keys\"}\n    }\n}\n"
+        },
+        {
+            "path": "index.php",
+            "lang": "neutral",
+            "size": 68724,
+            "md5": "b3231090d6cface43066c2c7dc71e277",
+            "content": "<?php\n// === MOND INDEX-EXPLORER & UNIVERSAL DATEISCHLEUSE ===\n// Version: 11.0.0 (2026 - Guaranteed CSS-Keyframe Podest & Shield, Blueprint v2.0.0 & 6-Tier tl())\n// Urheberrecht & Marke: Copyright (c) 2026 Mario Berg (MOND.TV). Alle Rechte vorbehalten.\n// 100% Polyglott- & Blueprint-v2.0.0-konform (PHP: and/or, Integer 192/193/448 | JS: && und ||)\n//\n// =========================================================================\n// KURZANLEITUNG & STEUERUNG (1-DATEI-KONFIGURATION):\n// 1. Durchschleusen: Lege index.php in einen Ordner (z. B. MODUL_STUDIO/).\n//    Sie startet automatisch modul_studio.php (Kleinschreibung zuerst, dann Gross).\n// 2. Index-Explorer oeffnen: Unten links auf das Icon klicken oder ?explorer=1 anhaengen.\n// 3. Monetarisierung: In Stufe 2 (oder direkt unten in $GATE_CFG) PayHub-Kuerzel,\n//    Stripe-ID und PayPal-ID eintragen - speichert sich selbst in dieser Datei.\n// 4. Treppen-Bruecke & Icon: 'podest_enabled' (true/false) schaltet den Sockel unten\n//    ein/aus. 'shield_delay_sec' steuert die Verzoegerung (0 = sofort, 5 = nach 5 Sek.,\n//    -1 = unsichtbar). 'shield_icon' aendert das Symbol.\n// =========================================================================\n\n@ini_set('display_errors', '0');\nerror_reporting(E_ALL);\n\nif (session_status() === PHP_SESSION_NONE and !headers_sent() and php_sapi_name() !== 'cli') {\n    @session_start();\n}\n\n// =========================================================================\n// ZENTRALER CONFIG-BEREICH (SELBSTSPEICHERND IN __FILE__)\n// =========================================================================\n// === [MOND_GATEKEEPER_CONFIG_START] ===\n$GATE_CFG = array(\n    'payhub_handle'    => 'mario',\n    'stripe_id'        => '',\n    'paypal_id'        => '',\n    'admin_key'        => '0b8d54a940ae87b61aada83f',\n    'sort_mode'        => 'name_asc', // Optionen: name_asc, name_desc, mtime_desc, size_desc\n    'podest_enabled'   => true,       // Treppenstufen-Bruecke unten (true = an, false = aus)\n    'shield_delay_sec' => 5,          // Icon-Verzoegerung in Sek. (0 = sofort, -1 = unsichtbar)\n    'shield_icon'      => '&#128737;' // Symbol/Entity unten links (z. B. &#128737; oder &#128194;)\n);\n// === [MOND_GATEKEEPER_CONFIG_END] ===\n\n$currentDirAbs    = str_replace('\\', '/', __DIR__);\n$folderName       = basename($currentDirAbs);\n$gateFallbackFile = $currentDirAbs . '/gatekeeper.json';\n$storageMode      = 'self';\n\nif (file_exists($gateFallbackFile)) {\n    $fbData = json_decode((string)@file_get_contents($gateFallbackFile), true);\n    if (is_array($fbData)) {\n        $GATE_CFG    = array_merge($GATE_CFG, $fbData);\n        $storageMode = 'json_fallback';\n    }\n}\n\n$vendorHandle   = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($GATE_CFG['payhub_handle'] ?? 'mario')) ?: 'mario';\n$stripeAcctId   = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($GATE_CFG['stripe_id'] ?? ''));\n$paypalAcctId   = preg_replace('/[^a-zA-Z0-9_@.-]/', '', (string)($GATE_CFG['paypal_id'] ?? ''));\n$adminSecretKey = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($GATE_CFG['admin_key'] ?? ''));\n$currentSort    = preg_replace('/[^a-zA-Z0-9_]/', '', (string)($GATE_CFG['sort_mode'] ?? 'name_asc')) ?: 'name_asc';\n$podestEnabled  = isset($GATE_CFG['podest_enabled']) ? (bool)$GATE_CFG['podest_enabled'] : true;\n$shieldDelaySec = isset($GATE_CFG['shield_delay_sec']) ? (int)$GATE_CFG['shield_delay_sec'] : 5;\n$shieldIconRaw  = preg_replace('/[^a-zA-Z0-9&#;._-]/', '', (string)($GATE_CFG['shield_icon'] ?? '&#128737;'));\nif ($shieldIconRaw === '') {\n    $shieldIconRaw = '&#128737;';\n}\n\n$isSafeEntity   = (bool)preg_match('/^&#(x[0-9a-fA-F]{2,6}|[0-9]{2,7});$/', $shieldIconRaw);\n$shieldIconHtml = $isSafeEntity ? $shieldIconRaw : htmlspecialchars($shieldIconRaw);\n\n// =========================================================================\n// 0. PRE-BOOT DIREKT-DURCHSCHLEUSUNG (KEIN IFRAME, REINES CSS-PODEST & SHIELD)\n// 1. Prio: Kleinbuchstaben (modul_studio.php)\n// 2. Prio: Grossbuchstaben (MODUL_STUDIO.php)\n// 3. Prio: Exakter Ordnername / Case-Insensitive Treffer\n// =========================================================================\n$matchingFile = '';\n$lowerTarget  = strtolower($folderName) . '.php';\n$upperTarget  = strtoupper($folderName) . '.php';\n$exactTarget  = $folderName . '.php';\n\nif (is_file($currentDirAbs . '/' . $lowerTarget)) {\n    $matchingFile = $currentDirAbs . '/' . $lowerTarget;\n} elseif (is_file($currentDirAbs . '/' . $upperTarget)) {\n    $matchingFile = $currentDirAbs . '/' . $upperTarget;\n} elseif (is_file($currentDirAbs . '/' . $exactTarget)) {\n    $matchingFile = $currentDirAbs . '/' . $exactTarget;\n} else {\n    $itemsCheck  = @scandir($currentDirAbs) ?: array();\n    $folderLower = strtolower($folderName);\n    foreach ($itemsCheck as $ic) {\n        if ($ic === '.' or $ic === '..' or strtolower($ic) === 'index.php') continue;\n        $ext = strtolower(pathinfo($ic, PATHINFO_EXTENSION));\n        if ($ext === 'php' and strtolower(pathinfo($ic, PATHINFO_FILENAME)) === $folderLower) {\n            $matchingFile = $currentDirAbs . '/' . $ic;\n            break;\n        }\n    }\n}\n\n$isGateAction = (\n    isset($_GET['explorer'])\n    or isset($_GET['gate_logout'])\n    or isset($_GET['magic_token'])\n    or isset($_POST['gate_action'])\n    or isset($_GET['mond_voice'])\n    or isset($_GET['voice'])\n);\n\nif ($matchingFile !== '' and is_file($matchingFile) and !$isGateAction) {\n    if (!defined('MOND_GATEKEEPER_ACTIVE')) {\n        define('MOND_GATEKEEPER_ACTIVE', true);\n    }\n    if (!defined('MOND_NO_ROUTING')) {\n        define('MOND_NO_ROUTING', true);\n    }\n    if (!defined('MOND_DIRECT_EXEC')) {\n        define('MOND_DIRECT_EXEC', true);\n    }\n\n    $_SERVER['SCRIPT_FILENAME'] = $matchingFile;\n\n    $isNonHtmlRequest = (\n        isset($_GET['ajax'])\n        or isset($_GET['json'])\n        or isset($_GET['ajax_inspect_dir'])\n        or isset($_GET['download_current_blueprint'])\n        or isset($_GET['download_blueprinted'])\n        or isset($_POST['ajax'])\n        or isset($_POST['ajax_parameterize_code'])\n        or isset($_POST['ajax_rename_file'])\n        or isset($_POST['download_zip'])\n        or (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) and strtolower((string)$_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')\n    );\n\n    $hasVisualOverlay = (!$isNonHtmlRequest and ($podestEnabled or $shieldDelaySec >= 0));\n\n    if ($hasVisualOverlay) {\n        $reqPathOnly = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?');\n        $explorerUrl = $reqPathOnly . '?explorer=1';\n        $delaySec    = max(0, $shieldDelaySec);\n        $shieldBot   = $podestEnabled ? '16px' : '16px';\n\n        $overlayCss  = 'html,body{margin:0!important;padding:0!important;width:100%;box-sizing:border-box;}';\n        $overlayHtml = '';\n\n        if ($podestEnabled) {\n            $overlayCss .= '.mond-footer-podest{'\n                . 'position:fixed!important;bottom:0!important;left:0!important;right:0!important;height:12px!important;z-index:2147483640!important;'\n                . 'background:linear-gradient(to top,rgba(1,4,9,0.96) 0%,rgba(56,189,248,0.14) 100%)!important;'\n                . 'border-top:1px solid rgba(56,189,248,0.38)!important;'\n                . 'box-shadow:0 -2px 12px rgba(56,189,248,0.14)!important;'\n                . 'pointer-events:none!important;display:block!important;'\n                . '}'\n                . '.mond-footer-podest::before,.mond-footer-podest::after{'\n                . 'content:\"\"!important;position:absolute!important;top:-6px!important;width:88px!important;height:6px!important;'\n                . 'border-top:1px solid rgba(56,189,248,0.38)!important;'\n                . 'pointer-events:none!important;display:block!important;'\n                . '}'\n                . '.mond-footer-podest::before{left:0!important;transform:skewX(-38deg)!important;transform-origin:top left!important;}'\n                . '.mond-footer-podest::after{right:0!important;transform:skewX(38deg)!important;transform-origin:top right!important;}';\n            $overlayHtml .= '<div class=\"mond-footer-podest\" aria-hidden=\"true\"></div>';\n        }\n\n        if ($shieldDelaySec >= 0) {\n            $overlayCss .= '@keyframes mondShieldReveal{'\n                . '0%{opacity:0;pointer-events:none;transform:translateY(8px) scale(0.92);}'\n                . '100%{opacity:0.55;pointer-events:auto;transform:translateY(0) scale(1);}'\n                . '}'\n                . '.mond-floating-shield{'\n                . 'position:fixed!important;bottom:' . $shieldBot . '!important;left:16px!important;z-index:2147483641!important;'\n                . 'background:rgba(1,4,9,0.86)!important;border:1px solid rgba(56,189,248,0.4)!important;color:#8b949e!important;'\n                . 'width:34px!important;height:34px!important;border-radius:50%!important;display:flex!important;align-items:center!important;justify-content:center!important;'\n                . 'text-decoration:none!important;font-size:14px!important;box-shadow:0 3px 12px rgba(0,0,0,0.6)!important;'\n                . 'backdrop-filter:blur(4px);cursor:pointer!important;'\n                . 'opacity:0;pointer-events:none;'\n                . 'animation:mondShieldReveal 0.65s ease ' . $delaySec . 's forwards!important;'\n                . 'transition:border-color 0.2s ease,color 0.2s ease,background 0.2s ease,box-shadow 0.2s ease,transform 0.2s ease!important;'\n                . '}'\n                . '.mond-floating-shield:hover{'\n                . 'opacity:1!important;color:#38bdf8!important;transform:scale(1.08)!important;border-color:#38bdf8!important;background:rgba(13,17,23,0.96)!important;box-shadow:0 0 14px rgba(56,189,248,0.5)!important;'\n                . '}';\n            $overlayHtml .= '<a href=\"' . htmlspecialchars($explorerUrl) . '\" id=\"mondFloatingShield\" class=\"mond-floating-shield\" title=\"Index-Explorer\">' . $shieldIconHtml . '</a>';\n        }\n\n        $shieldOverlay = \"\n<style>\" . $overlayCss . \"</style>\n\" . $overlayHtml . \"\n\";\n\n        register_shutdown_function(function () use ($shieldOverlay) {\n            $status = http_response_code();\n            if ($status >= 300 and $status < 400) {\n                return;\n            }\n            foreach (headers_list() as $hdr) {\n                $hLow = strtolower($hdr);\n                if (str_starts_with($hLow, 'content-type:') and !str_contains($hLow, 'text/html')) {\n                    return;\n                }\n                if (str_starts_with($hLow, 'content-disposition:') and str_contains($hLow, 'attachment')) {\n                    return;\n                }\n            }\n            echo $shieldOverlay;\n        });\n    }\n\n    require_once $matchingFile;\n    exit;\n}\n\n// =========================================================================\n// 1. SELBSTSPEICHER-ENGINE FUER __FILE__ (1-DATEI-AUTARKIE VIA NOWDOC)\n// =========================================================================\nfunction mond_gate_save_self_config(string $filePath, array $cfg): bool {\n    if (!is_file($filePath) or !is_writable($filePath)) {\n        return false;\n    }\n    $src = (string)@file_get_contents($filePath);\n    if ($src === '') {\n        return false;\n    }\n    $cleanHandle = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($cfg['payhub_handle'] ?? 'mario'));\n    if ($cleanHandle === '') {\n        $cleanHandle = 'mario';\n    }\n    $cleanStripe = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($cfg['stripe_id'] ?? ''));\n    $cleanPaypal = preg_replace('/[^a-zA-Z0-9_@.-]/', '', (string)($cfg['paypal_id'] ?? ''));\n    $cleanAdmin  = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($cfg['admin_key'] ?? ''));\n    $cleanSort   = preg_replace('/[^a-zA-Z0-9_]/', '', (string)($cfg['sort_mode'] ?? 'name_asc'));\n    if ($cleanSort === '') {\n        $cleanSort = 'name_asc';\n    }\n    $cleanPodest = !empty($cfg['podest_enabled']) ? 'true' : 'false';\n    $cleanDelay  = isset($cfg['shield_delay_sec']) ? (int)$cfg['shield_delay_sec'] : 5;\n    $cleanDelay  = max(-1, min(300, $cleanDelay));\n    $cleanIcon   = preg_replace('/[^a-zA-Z0-9&#;._-]/', '', (string)($cfg['shield_icon'] ?? '&#128737;'));\n    if ($cleanIcon === '') {\n        $cleanIcon = '&#128737;';\n    }\n\n    $cfgTpl = <<<'CFG_TPL'\n// === [MOND_GATEKEEPER_CONFIG_START] ===\n$GATE_CFG = array(\n    'payhub_handle'    => '{{HANDLE}}',\n    'stripe_id'        => '{{STRIPE}}',\n    'paypal_id'        => '{{PAYPAL}}',\n    'admin_key'        => '{{ADMIN}}',\n    'sort_mode'        => '{{SORT}}', // Optionen: name_asc, name_desc, mtime_desc, size_desc\n    'podest_enabled'   => {{PODEST}},       // Treppenstufen-Bruecke unten (true = an, false = aus)\n    'shield_delay_sec' => {{DELAY}},          // Icon-Verzoegerung in Sek. (0 = sofort, -1 = unsichtbar)\n    'shield_icon'      => '{{ICON}}' // Symbol/Entity unten links (z. B. &#128737; oder &#128194;)\n);\n// === [MOND_GATEKEEPER_CONFIG_END] ===\nCFG_TPL;\n\n    $block = strtr($cfgTpl, array(\n        '{{HANDLE}}' => $cleanHandle,\n        '{{STRIPE}}' => $cleanStripe,\n        '{{PAYPAL}}' => $cleanPaypal,\n        '{{ADMIN}}'  => $cleanAdmin,\n        '{{SORT}}'   => $cleanSort,\n        '{{PODEST}}' => $cleanPodest,\n        '{{DELAY}}'  => (string)$cleanDelay,\n        '{{ICON}}'   => $cleanIcon\n    ));\n\n    $pattern = '#// === \[MOND_GATEKEEPER_CONFIG_START\] ===.*?// === \[MOND_GATEKEEPER_CONFIG_END\] ===#s';\n    if (!preg_match($pattern, $src)) {\n        return false;\n    }\n    $updated = preg_replace_callback($pattern, function () use ($block) {\n        return $block;\n    }, $src, 1);\n\n    if (!is_string($updated) or $updated === '' or !str_contains($updated, '[MOND_GATEKEEPER_CONFIG_END]')) {\n        return false;\n    }\n    return (@file_put_contents($filePath, $updated, LOCK_EX) !== false);\n}\n\n// =========================================================================\n// 2. MUTTERSCHIFF-RADAR MIT BIBLIOTHEKS-ISOLATIONSSCHILD (NUR FUER EXPLORER)\n// =========================================================================\n$origScriptFilename = isset($_SERVER['SCRIPT_FILENAME']) ? (string)$_SERVER['SCRIPT_FILENAME'] : '';\nif (!defined('MOND_GATEKEEPER_ACTIVE')) {\n    define('MOND_GATEKEEPER_ACTIVE', true);\n}\nif (!defined('MOND_NO_ROUTING')) {\n    define('MOND_NO_ROUTING', true);\n}\nif (!defined('MOND_LIB_LOADING')) {\n    define('MOND_LIB_LOADING', true);\n}\n\n$_SERVER['SCRIPT_FILENAME'] = '__MOND_LIB_INCLUDE__';\nob_start();\n\nif (!defined('MOND_ROOT')) {\n    $scanDir      = $currentDirAbs;\n    $maxLevels    = 6;\n    $currentLevel = 0;\n    while ($scanDir !== dirname($scanDir) and $currentLevel < $maxLevels) {\n        if (file_exists($scanDir . '/_bootloader/_bootloader.php')) {\n            require_once $scanDir . '/_bootloader/_bootloader.php';\n            break;\n        }\n        if (file_exists($scanDir . '/_bootloader.php')) {\n            require_once $scanDir . '/_bootloader.php';\n            break;\n        }\n        $scanDir = dirname($scanDir);\n        $currentLevel++;\n    }\n}\n\nif (function_exists('load_lib')) {\n    try { load_lib('auth'); } catch (Throwable $e) {}\n    try { load_lib('lang'); } catch (Throwable $e) {}\n    try { load_lib('layout'); } catch (Throwable $e) {}\n} elseif (function_exists('hub')) {\n    try { hub('auth'); } catch (Throwable $e) {}\n    try { hub('lang'); } catch (Throwable $e) {}\n    try { hub('layout'); } catch (Throwable $e) {}\n}\n\nwhile (ob_get_level() > 0) {\n    @ob_end_clean();\n}\n$_SERVER['SCRIPT_FILENAME'] = $origScriptFilename;\n@ini_set('display_errors', '0');\n\n$hasMothership = (class_exists('MondLayout', false) and method_exists('MondLayout', 'renderHtml'));\n\n// =========================================================================\n// 3. 6-STUFEN LOKALISIERUNG (BLUEPRINT v2.0.0 tl() KASKADE)\n// =========================================================================\n$local_words_fallback = array(\n    'de' => array(\n        'title'         => 'Mond Index-Explorer',\n        'banner_desc'   => 'Strenge Dateischleuse aktiv: Gleichnamige Dateien werden direkt durchgeschleust. Andernfalls greift der 4-Stufen-Index-Explorer.',\n        'safeguard_tip' => 'Eigenes PayHub-Kuerzel, Stripe- oder PayPal-ID hinterlegen und an jedem Verkauf (19 EUR) direkt mitverdienen.',\n        'buy_btn'       => '&#128179; Index-Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; PayHub-Kuerzel',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Im Ordner angedockt:',\n        'parent_up'     => 'Uebergeordneter Ordner (eine Ebene hoeher)',\n        'dir_badge'     => 'ORDNER',\n        'empty_dir'     => 'Dieses Verzeichnis ist leer.',\n        'read'          => '&#128214; Lesen',\n        'open'          => '&#8599; Tab',\n        'close_reader'  => '&#10006; Schliessen',\n        'login_title'   => '&#128274; Zugang & Freischaltung (3 Wege)',\n        'tab_token'     => '1. Lizenz-Token',\n        'tab_admin'     => '2. Admin-Key',\n        'tab_magic'     => '3. E-Mail-Link'\n    ),\n    'en' => array(\n        'title'         => 'Mond Index Explorer',\n        'banner_desc'   => 'Strict file gateway active: Matching files pass through directly. Otherwise, the 4-tier Index Explorer opens.',\n        'safeguard_tip' => 'Connect your PayHub handle, Stripe or PayPal ID to earn on every license sale (19 EUR).',\n        'buy_btn'       => '&#128179; Index Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; PayHub Handle',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Docked in folder:',\n        'parent_up'     => 'Parent Directory (one level up)',\n        'dir_badge'     => 'FOLDER',\n        'empty_dir'     => 'This directory is empty.',\n        'read'          => '&#128214; Read',\n        'open'          => '&#8599; Tab',\n        'close_reader'  => '&#10006; Close',\n        'login_title'   => '&#128274; Access & Unlock (3 Methods)',\n        'tab_token'     => '1. License Token',\n        'tab_admin'     => '2. Admin Key',\n        'tab_magic'     => '3. Magic Link'\n    ),\n    'it' => array(\n        'title'         => 'Mond Index Explorer',\n        'banner_desc'   => 'Gateway attivo: i file omonimi passano direttamente. Altrimenti si apre il file explorer a 4 livelli.',\n        'safeguard_tip' => 'Collega il tuo ID Stripe o PayPal e guadagna su ogni licenza venduta (19 EUR).',\n        'buy_btn'       => '&#128179; Index Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; ID PayHub',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Collegato nella cartella:',\n        'parent_up'     => 'Cartella superiore (un livello su)',\n        'dir_badge'     => 'CARTELLA',\n        'empty_dir'     => 'Questa directory e vuota.',\n        'read'          => '&#128214; Leggi',\n        'open'          => '&#8599; Scheda',\n        'close_reader'  => '&#10006; Chiudi',\n        'login_title'   => '&#128274; Accesso (3 metodi)',\n        'tab_token'     => '1. Token Licenza',\n        'tab_admin'     => '2. Chiave Admin',\n        'tab_magic'     => '3. Link E-Mail'\n    ),\n    'fr' => array(\n        'title'         => 'Mond Index Explorer',\n        'banner_desc'   => 'Passerelle active : les fichiers homonymes sont transmis directement. Sinon, l explorateur a 4 niveaux s ouvre.',\n        'safeguard_tip' => 'Ajoutez votre ID Stripe ou PayPal et gagnez sur chaque vente (19 EUR).',\n        'buy_btn'       => '&#128179; Index Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; ID PayHub',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Connecte dans le dossier :',\n        'parent_up'     => 'Dossier parent (un niveau plus haut)',\n        'dir_badge'     => 'DOSSIER',\n        'empty_dir'     => 'Ce repertoire est vide.',\n        'read'          => '&#128214; Lire',\n        'open'          => '&#8599; Onglet',\n        'close_reader'  => '&#10006; Fermer',\n        'login_title'   => '&#128274; Connexion (3 methodes)',\n        'tab_token'     => '1. Jeton Licence',\n        'tab_admin'     => '2. Cle Admin',\n        'tab_magic'     => '3. Lien E-Mail'\n    ),\n    'es' => array(\n        'title'         => 'Mond Index Explorer',\n        'banner_desc'   => 'Pasarela activa: los archivos homonimos pasan directamente. De lo contrario, se abre el explorador de 4 niveles.',\n        'safeguard_tip' => 'Configure su ID de Stripe o PayPal y gane por cada licencia vendida (19 EUR).',\n        'buy_btn'       => '&#128179; Index Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; ID PayHub',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Acoplado en carpeta:',\n        'parent_up'     => 'Carpeta superior (un nivel arriba)',\n        'dir_badge'     => 'CARPETA',\n        'empty_dir'     => 'Este directorio esta vacio.',\n        'read'          => '&#128214; Leer',\n        'open'          => '&#8599; Pestana',\n        'close_reader'  => '&#10006; Cerrar',\n        'login_title'   => '&#128274; Acceso (3 metodos)',\n        'tab_token'     => '1. Token Licencia',\n        'tab_admin'     => '2. Clave Admin',\n        'tab_magic'     => '3. Enlace E-Mail'\n    ),\n    'nl' => array(\n        'title'         => 'Mond Index Explorer',\n        'banner_desc'   => 'Gateway actief: gelijknamige bestanden worden direct doorgelaten. Anders opent de 4-traps verkenner.',\n        'safeguard_tip' => 'Koppel uw Stripe- of PayPal-ID en verdien mee aan elke licentieverkoop (19 EUR).',\n        'buy_btn'       => '&#128179; Index Explorer (19 EUR)',\n        'partner_btn'   => '&#128176; PayHub-ID',\n        'buy_safeguard' => '&#128737; MOND SafeGuard',\n        'buy_exp_plus'  => '&#9889; Explorer Plus',\n        'docked_label'  => 'Gekoppeld in map:',\n        'parent_up'     => 'Bovenliggende map (een niveau omhoog)',\n        'dir_badge'     => 'MAP',\n        'empty_dir'     => 'Deze map is leeg.',\n        'read'          => '&#128214; Lezen',\n        'open'          => '&#8599; Tabblad',\n        'close_reader'  => '&#10006; Sluiten',\n        'login_title'   => '&#128274; Toegang (3 methoden)',\n        'tab_token'     => '1. Licentietoken',\n        'tab_admin'     => '2. Admin-sleutel',\n        'tab_magic'     => '3. E-maillink'\n    )\n);\n\n$deltaJsonFile  = $currentDirAbs . '/i18n_delta_prio_overrides.json';\n$prioJsonFile   = $currentDirAbs . '/i18n_prio_words.json';\n$deltaDict      = array();\n$prioDict       = array();\n$availableLangs = array();\n\nif (file_exists($deltaJsonFile)) {\n    $rawDelta = json_decode((string)@file_get_contents($deltaJsonFile), true);\n    if (is_array($rawDelta)) {\n        $deltaDict = (isset($rawDelta['translations']) and is_array($rawDelta['translations'])) ? $rawDelta['translations'] : $rawDelta;\n    }\n}\n\nif (file_exists($prioJsonFile)) {\n    $rawPrio = json_decode((string)@file_get_contents($prioJsonFile), true);\n    if (is_array($rawPrio)) {\n        $prioDict = (isset($rawPrio['translations']) and is_array($rawPrio['translations'])) ? $rawPrio['translations'] : $rawPrio;\n        if (!empty($rawPrio['languages']) and is_array($rawPrio['languages'])) {\n            foreach ($rawPrio['languages'] as $jLang) {\n                $cleanL = preg_replace('/[^a-z]/', '', strtolower((string)$jLang));\n                if ($cleanL !== '' and !in_array($cleanL, $availableLangs, true)) {\n                    $availableLangs[] = $cleanL;\n                }\n            }\n        }\n    }\n}\n\nif (empty($availableLangs)) {\n    $availableLangs = array_keys($local_words_fallback);\n}\n$defaultLang = !empty($availableLangs) ? (string)$availableLangs[0] : 'de';\n\nif (!empty($_GET['lang'])) {\n    $reqLang = preg_replace('/[^a-z]/', '', strtolower((string)$_GET['lang']));\n    if (in_array($reqLang, $availableLangs, true)) {\n        $_SESSION['mond_lang'] = $reqLang;\n    }\n}\n$activeLang = isset($_SESSION['mond_lang']) ? (string)$_SESSION['mond_lang'] : $defaultLang;\nif (!in_array($activeLang, $availableLangs, true)) {\n    $activeLang = $defaultLang;\n}\n\nif (!function_exists('tl')) {\n    function tl(string $key, string $seedText = ''): string {\n        global $deltaDict, $prioDict, $local_words_fallback, $activeLang, $defaultLang;\n        // 1. i18n_delta_prio_overrides.json\n        if (!empty($deltaDict[$key][$activeLang])) {\n            return (string)$deltaDict[$key][$activeLang];\n        }\n        // 2. i18n_prio_words.json\n        if (!empty($prioDict[$key][$activeLang])) {\n            return (string)$prioDict[$key][$activeLang];\n        }\n        // 3. $local_words_fallback\n        if (!empty($local_words_fallback[$activeLang][$key])) {\n            return (string)$local_words_fallback[$activeLang][$key];\n        }\n        // 4. MondLang::get()\n        if (class_exists('MondLang', false) and method_exists('MondLang', 'get')) {\n            $coreVal = (string)MondLang::get($key);\n            if ($coreVal !== '' and $coreVal !== $key) {\n                return $coreVal;\n            }\n        }\n        // 5. Cascade Fallback (Target -> EN -> DE)\n        foreach (array($defaultLang, 'en', 'de') as $fbLang) {\n            if (!empty($local_words_fallback[$fbLang][$key])) {\n                return (string)$local_words_fallback[$fbLang][$key];\n            }\n        }\n        // 6. Seed Text\n        return ($seedText !== '') ? $seedText : $key;\n    }\n}\n\n// =========================================================================\n// 4. ADMIN-KEY SELBSTINITIALISIERUNG\n// =========================================================================\nif ($adminSecretKey === '') {\n    $adminSecretKey        = bin2hex(random_bytes(12));\n    $GATE_CFG['admin_key'] = $adminSecretKey;\n    if (!mond_gate_save_self_config(__FILE__, $GATE_CFG)) {\n        @file_put_contents($gateFallbackFile, json_encode($GATE_CFG, 192));\n        $storageMode = 'json_fallback';\n    }\n}\n\n// =========================================================================\n// 5. 3-WEGE LOGIN-HANDLER & SELBSTSPEICHERUNG (PAYHUB, PODEST, DELAY)\n// =========================================================================\n$authNotice = '';\n\nif (!empty($_GET['magic_token']) and !empty($_SESSION['mond_magic_hash'])) {\n    $inMagic = trim((string)$_GET['magic_token']);\n    if (hash_equals((string)$_SESSION['mond_magic_hash'], hash('sha256', $inMagic))) {\n        $_SESSION['auth_level'] = 2;\n        unset($_SESSION['mond_magic_hash']);\n        $authNotice = 'Magic-Link erfolgreich bestaetigt (Stufe 2 Setup aktiv).';\n    }\n}\n\nif (isset($_GET['gate_logout'])) {\n    $_SESSION['auth_level'] = 0;\n    unset($_SESSION['is_master_admin'], $_SESSION['mond_user_token']);\n    header('Location: ' . strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?'));\n    exit;\n}\n\nif ($_SERVER['REQUEST_METHOD'] === 'POST' and isset($_POST['gate_action'])) {\n    $gAct = (string)$_POST['gate_action'];\n\n    if ($gAct === 'login_token') {\n        $tok = trim((string)($_POST['license_token'] ?? ''));\n        if (strlen($tok) >= 8) {\n            $_SESSION['auth_level'] = 2;\n            $_SESSION['mond_user_token'] = preg_replace('/[^a-zA-Z0-9_-]/', '', $tok);\n            $authNotice = 'Lizenz-Token akzeptiert (Stufe 2 freigeschaltet).';\n        } else {\n            $authNotice = 'Ungueltiger Lizenz-Token (mindestens 8 Zeichen).';\n        }\n    }\n\n    if ($gAct === 'login_admin') {\n        $inKey = trim((string)($_POST['admin_key'] ?? ''));\n        if ($inKey !== '' and $adminSecretKey !== '' and hash_equals($adminSecretKey, $inKey)) {\n            $_SESSION['auth_level'] = 3;\n            $_SESSION['is_master_admin'] = true;\n            $authNotice = 'Admin-Schluessel verifiziert (Stufe 3 Master aktiv).';\n        } else {\n            $authNotice = 'Falscher Admin-Key.';\n        }\n    }\n\n    if ($gAct === 'send_magic') {\n        $mailTo = filter_var(trim((string)($_POST['magic_email'] ?? '')), FILTER_VALIDATE_EMAIL);\n        if ($mailTo !== false) {\n            $rawMagic = bin2hex(random_bytes(16));\n            $_SESSION['mond_magic_hash'] = hash('sha256', $rawMagic);\n            $proto    = (!empty($_SERVER['HTTPS']) and $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';\n            $host     = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');\n            $uri      = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?');\n            $magicUrl = $proto . $host . $uri . '?explorer=1&magic_token=' . urlencode($rawMagic);\n            $subj     = 'MOND Index-Explorer Login-Link (' . $folderName . ')';\n            $bodyTxt  = \"Ihr direkter Zugangs-Link fuer den Mond Index-Explorer:\n\n\" . $magicUrl . \"\n\";\n            @mail($mailTo, $subj, $bodyTxt, 'From: noreply@' . preg_replace('/^www\./', '', $host));\n            $authNotice = 'Login-Link wurde an ' . $mailTo . ' versendet.';\n        } else {\n            $authNotice = 'Bitte eine gueltige E-Mail-Adresse eingeben.';\n        }\n    }\n\n    if ($gAct === 'save_vendor') {\n        $isLocalReq = in_array($_SERVER['REMOTE_ADDR'] ?? '', array('127.0.0.1', '::1', 'localhost'), true);\n        $chkLvl     = ($isLocalReq or !empty($_SESSION['is_master_admin'])) ? 3 : (int)($_SESSION['auth_level'] ?? 0);\n        if ($chkLvl >= 2) {\n            $newVendor = preg_replace('/[^a-zA-Z0-9_-]/', '', trim((string)($_POST['vendor_handle'] ?? '')));\n            $newStripe = preg_replace('/[^a-zA-Z0-9_-]/', '', trim((string)($_POST['stripe_id'] ?? '')));\n            $newPaypal = preg_replace('/[^a-zA-Z0-9_@.-]/', '', trim((string)($_POST['paypal_id'] ?? '')));\n            $newSort   = preg_replace('/[^a-zA-Z0-9_]/', '', trim((string)($_POST['sort_mode'] ?? 'name_asc')));\n            $newDelay  = isset($_POST['shield_delay_sec']) ? (int)$_POST['shield_delay_sec'] : 5;\n            $newIcon   = preg_replace('/[^a-zA-Z0-9&#;._-]/', '', trim((string)($_POST['shield_icon'] ?? '&#128737;')));\n            $newPodest = isset($_POST['podest_enabled']);\n\n            if ($newVendor !== '') {\n                $vendorHandle = $newVendor;\n            }\n            $stripeAcctId   = $newStripe;\n            $paypalAcctId   = $newPaypal;\n            $currentSort    = ($newSort !== '') ? $newSort : 'name_asc';\n            $podestEnabled  = $newPodest;\n            $shieldDelaySec = max(-1, min(300, $newDelay));\n            $shieldIconRaw  = ($newIcon !== '') ? $newIcon : '&#128737;';\n\n            $GATE_CFG['payhub_handle']    = $vendorHandle;\n            $GATE_CFG['stripe_id']        = $stripeAcctId;\n            $GATE_CFG['paypal_id']        = $paypalAcctId;\n            $GATE_CFG['admin_key']        = $adminSecretKey;\n            $GATE_CFG['sort_mode']        = $currentSort;\n            $GATE_CFG['podest_enabled']   = $podestEnabled;\n            $GATE_CFG['shield_delay_sec'] = $shieldDelaySec;\n            $GATE_CFG['shield_icon']      = $shieldIconRaw;\n\n            if (mond_gate_save_self_config(__FILE__, $GATE_CFG)) {\n                $storageMode = 'self';\n                if (file_exists($gateFallbackFile)) {\n                    @unlink($gateFallbackFile);\n                }\n                $podestTxt  = $podestEnabled ? 'AN' : 'AUS';\n                $authNotice = 'Config gespeichert: PayHub (' . $vendorHandle . '), Bruecke (' . $podestTxt . '), Delay (' . $shieldDelaySec . 's).';\n            } else {\n                @file_put_contents($gateFallbackFile, json_encode($GATE_CFG, 192));\n                $storageMode = 'json_fallback';\n                $authNotice  = 'index.php schreibgeschuetzt - in gatekeeper.json gespeichert.';\n            }\n        }\n    }\n}\n\n// =========================================================================\n// 6. RECHTE-KASKADE & KAUF-LINKS FUER EXPLORER-MODUS\n// =========================================================================\n$isLocal   = in_array($_SERVER['REMOTE_ADDR'] ?? '', array('127.0.0.1', '::1', 'localhost'), true);\n$authLevel = 0;\nif ($isLocal or !empty($_SESSION['is_master_admin'])) {\n    $authLevel = 3;\n} elseif (class_exists('MondAuth', false) and method_exists('MondAuth', 'getLevel')) {\n    $authLevel = MondAuth::getLevel();\n} elseif (isset($_SESSION['auth_level'])) {\n    $authLevel = (int)$_SESSION['auth_level'];\n}\n\n$canManage = ($authLevel >= 2);\n$isMaster  = ($authLevel >= 3);\n\n$payQueryParams = array();\nif ($stripeAcctId !== '') {\n    $payQueryParams['stripe_id'] = $stripeAcctId;\n}\nif ($paypalAcctId !== '') {\n    $payQueryParams['paypal_id'] = $paypalAcctId;\n}\n$payQueryStr = !empty($payQueryParams) ? ('?' . http_build_query($payQueryParams)) : '';\n\n$payHubBuyUrl       = 'https://mond.tv/pay/gatekeeper_license/19EUR/' . urlencode($vendorHandle) . $payQueryStr;\n$payHubPartnerUrl   = 'https://mond.tv/pay/payhub_handle/29EUR/' . urlencode($vendorHandle) . $payQueryStr;\n$buySafeGuardUrl    = 'https://mond.tv/safeguard';\n$buyExplorerPlusUrl = 'https://mond.tv/explorer';\n\n$hasLocalExplorerPlus = file_exists($currentDirAbs . '/explorer.php');\n$hasLocalSafeGuard    = file_exists($currentDirAbs . '/safeguard.php');\n\n// =========================================================================\n// 7. UNIVERSAL VOICE CONTRACT (?mond_voice=1 / ?voice=1)\n// =========================================================================\nif (isset($_GET['mond_voice']) or isset($_GET['voice'])) {\n    while (ob_get_level() > 0) { @ob_end_clean(); }\n    header('Content-Type: application/json; charset=utf-8');\n    echo json_encode(array(\n        'status'           => 'ok',\n        'module'           => 'index_explorer',\n        'folder'           => $folderName,\n        'vendor'           => $vendorHandle,\n        'sort_mode'        => $currentSort,\n        'podest_enabled'   => $podestEnabled,\n        'shield_delay_sec' => $shieldDelaySec,\n        'speak'            => 'Mond Index-Explorer im Verzeichnis ' . $folderName . ' ist aktiv.'\n    ), 192);\n    exit;\n}\n\n// =========================================================================\n// 8. REKURSIVER ORDNER-SCANNER & KONFIGURIERBARE SORTIER-LOGIK\n// =========================================================================\n$scanPath = $currentDirAbs;\nif (!empty($_GET['sub'])) {\n    $rawSub    = trim(str_replace('\\', '/', (string)$_GET['sub']), '/');\n    $subTarget = realpath($currentDirAbs . '/' . $rawSub);\n    if ($subTarget !== false) {\n        $normSub = str_replace('\\', '/', $subTarget);\n        if (($normSub === $currentDirAbs or str_starts_with($normSub . '/', $currentDirAbs . '/')) and is_dir($normSub)) {\n            $scanPath = $normSub;\n        }\n    }\n}\n\n$relSub   = trim(str_replace('\\', '/', str_replace($currentDirAbs, '', $scanPath)), '/');\n$subParts = ($relSub !== '') ? explode('/', $relSub) : array();\n$upSub    = (count($subParts) > 1) ? implode('/', array_slice($subParts, 0, -1)) : '';\n\n$items   = @scandir($scanPath) ?: array();\n$folders = array();\n$files   = array();\n\n$readableExts = array('md', 'txt', 'json', 'html', 'htm', 'css', 'js', 'xml', 'csv', 'ini', 'log', 'svg');\nif ($isMaster) {\n    $readableExts[] = 'php';\n}\n\nforeach ($items as $item) {\n    if ($item === '.' or $item === '..' or str_starts_with($item, '.')) continue;\n    $full = $scanPath . '/' . $item;\n    if (is_dir($full)) {\n        if ($item === 'db' and !$isMaster) continue;\n        $folders[] = $item;\n    } elseif (is_file($full)) {\n        if ($scanPath === $currentDirAbs and $item === basename(__FILE__)) continue;\n        $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));\n        $files[] = array(\n            'name'      => $item,\n            'ext'       => $ext,\n            'size_raw'  => (int)@filesize($full),\n            'size'      => round((int)@filesize($full) / 1024, 1) . ' KB',\n            'mtime'     => (int)@filemtime($full),\n            'mtime_str' => date('d.m.Y H:i', (int)@filemtime($full)),\n            'readable'  => in_array($ext, $readableExts, true),\n            'web'       => in_array($ext, array('php', 'html', 'htm', 'json', 'md', 'txt', 'svg'), true)\n        );\n    }\n}\n\nnatcasesort($folders);\nif ($currentSort === 'name_desc') {\n    $folders = array_reverse($folders);\n}\n\nusort($files, function ($a, $b) use ($currentSort) {\n    if ($currentSort === 'name_desc') {\n        return strnatcasecmp($b['name'], $a['name']);\n    } elseif ($currentSort === 'mtime_desc') {\n        return $b['mtime'] <=> $a['mtime'];\n    } elseif ($currentSort === 'size_desc') {\n        return $b['size_raw'] <=> $a['size_raw'];\n    }\n    return strnatcasecmp($a['name'], $b['name']);\n});\n\n$viewedFileName    = '';\n$viewedFileContent = '';\n$viewedFileMeta    = '';\nif (!empty($_GET['view'])) {\n    $candView = basename(str_replace('\\', '/', (string)$_GET['view']));\n    if ($candView !== '' and !str_starts_with($candView, '.')) {\n        $candPath = $scanPath . '/' . $candView;\n        $candExt  = strtolower(pathinfo($candView, PATHINFO_EXTENSION));\n        if (is_file($candPath) and in_array($candExt, $readableExts, true)) {\n            $viewedFileName    = $candView;\n            $rawBytes          = (string)@file_get_contents($candPath);\n            $viewedFileContent = (strlen($rawBytes) > 250000) ? (substr($rawBytes, 0, 250000) . \"\n\n--- [Gekuerzt ab 250 KB] ---\") : $rawBytes;\n            $viewedFileMeta    = round((int)@filesize($candPath) / 1024, 1) . ' KB | ' . date('d.m.Y H:i', (int)@filemtime($candPath));\n        }\n    }\n}\n\n$MODULE_TITLE = strip_tags(tl('title', 'Mond Index-Explorer')) . ': ' . ($relSub !== '' ? $folderName . '/' . $relSub : $folderName);\nob_start();\n?>\n<style>\n    .mond-gate-wrap { max-width: 880px; margin: 0 auto; font-family: system-ui, -apple-system, sans-serif; color: #c9d1d9; font-size: 12px; box-sizing: border-box; }\n    .mond-card { background: #010409; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }\n    .mond-card summary {\n        font-weight: bold; cursor: pointer; font-size: 13px; list-style: none; outline: none;\n        display: flex; align-items: center; justify-content: space-between; gap: 8px;\n        white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; user-select: none;\n    }\n    .mond-card summary::-webkit-details-marker { display: none; }\n    .mond-card summary::after { content: '\25BE'; font-size: 13px; color: #8b949e; flex-shrink: 0; transition: transform 0.25s ease; }\n    .mond-card.is-open > summary::after, details[open].mond-card > summary::after { transform: rotate(180deg); color: #38bdf8; }\n\n    .mond-card[data-tier=\"0\"] { border: 2px solid #1f6feb; } .mond-card[data-tier=\"0\"] > summary { color: #58a6ff; }\n    .mond-card[data-tier=\"1\"] { border: 2px solid #238636; } .mond-card[data-tier=\"1\"] > summary { color: #7ee787; }\n    .mond-card[data-tier=\"2\"] { border: 2px solid #d29922; } .mond-card[data-tier=\"2\"] > summary { color: #e3b341; }\n    .mond-card[data-tier=\"3\"] { border: 2px solid #8957e5; } .mond-card[data-tier=\"3\"] > summary { color: #a371f7; }\n\n    .mond-accordion-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1); }\n    .mond-card.is-open > .mond-accordion-grid, details[open].mond-card > .mond-accordion-grid { grid-template-rows: 1fr; }\n    .mond-accordion-inner { overflow: hidden; min-height: 0; }\n\n    .mond-cyber-capsule { background: #06090f; border: 1px solid #21262d; border-left: 3px solid #38bdf8; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }\n    .mond-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }\n    .mond-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }\n    @media (max-width: 680px) { .mond-grid-2, .mond-grid-3 { grid-template-columns: 1fr; } }\n\n    .gate-btn { background: #161b22; border: 1px solid #30363d; color: #c9d1d9; padding: 5px 9px; border-radius: 5px; font-size: 11px; font-weight: bold; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; box-sizing: border-box; white-space: nowrap; }\n    .gate-btn:hover { border-color: #38bdf8; color: #fff; background: #21262d; }\n    .gate-input, .gate-select { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #7ee787; padding: 6px 9px; border-radius: 5px; font-family: monospace; font-size: 11px; box-sizing: border-box; outline: none; }\n\n    .dock-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; background: rgba(35,134,54,0.12); border: 1px solid #2ea043; border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; }\n\n    .exp-pathbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; font-family: monospace; font-size: 11.5px; }\n    .exp-pathbar a { color: #38bdf8; text-decoration: none; font-weight: bold; }\n    .exp-pathbar a:hover { text-decoration: underline; }\n\n    .exp-tree { border: 1px solid #30363d; border-radius: 6px; overflow: hidden; background: #06090f; }\n    .exp-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #161b22; gap: 8px; transition: background 0.12s ease; }\n    .exp-row:last-child { border-bottom: none; }\n    .exp-row:hover { background: #111824; }\n    .exp-row-parent { background: #0d131f; border-bottom: 1px solid #30363d; }\n    .exp-row-parent:hover { background: #162236; }\n    .exp-row-active { background: #0d1d33 !important; border-left: 3px solid #38bdf8; }\n\n    .exp-left { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }\n    .exp-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }\n    .exp-name-folder { font-family: monospace; font-weight: bold; font-size: 12px; color: #58a6ff; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n    .exp-name-folder:hover { color: #fff; text-decoration: underline; }\n    .exp-name-parent { font-family: monospace; font-weight: bold; font-size: 12px; color: #e3b341; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n    .exp-name-parent:hover { color: #fff; }\n    .exp-name-file { font-family: monospace; font-weight: bold; font-size: 12px; color: #e6edf3; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n    .exp-name-file:hover { color: #7ee787; }\n\n    .exp-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }\n    .exp-meta { font-family: monospace; font-size: 10px; color: #8b949e; white-space: nowrap; }\n    .exp-badge-dir { font-family: monospace; font-size: 9.5px; color: #58a6ff; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); padding: 1px 6px; border-radius: 3px; }\n    .exp-badge-up { font-family: monospace; font-size: 9.5px; color: #e3b341; background: rgba(210,153,34,0.12); border: 1px solid rgba(210,153,34,0.35); padding: 1px 6px; border-radius: 3px; }\n    @media (max-width: 540px) { .exp-meta { display: none; } }\n\n    .reader-box { background: #08101e; border: 1.5px solid #38bdf8; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }\n    .reader-pre { background: #010409; border: 1px solid #30363d; border-radius: 5px; padding: 10px; color: #e6edf3; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; max-height: 440px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0 0; }\n</style>\n\n<div class=\"mond-gate-wrap\" data-dom-ignore=\"true\">\n\n    <?php if (!$hasMothership): ?>\n    <div style=\"background:#010409; border:1.5px solid #30363d; border-radius:8px; padding:10px 14px; margin-bottom:12px;\">\n        <div style=\"display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; border-bottom:1px solid #21262d; padding-bottom:8px; margin-bottom:8px;\">\n            <div>\n                <strong style=\"color:#38bdf8; font-size:13px;\">&#128737; <?= tl('title', 'Mond Index-Explorer') ?></strong>\n                <span style=\"font-size:10.5px; color:#8b949e; margin-left:6px;\">Stufe <?= (int)$authLevel ?></span>\n            </div>\n            <div style=\"display:flex; gap:4px; align-items:center; flex-wrap:wrap;\">\n                <?php\n                $langBaseParams = array();\n                if (isset($_GET['explorer'])) {\n                    $langBaseParams['explorer'] = '1';\n                }\n                if ($relSub !== '') {\n                    $langBaseParams['sub'] = $relSub;\n                }\n                if ($viewedFileName !== '') {\n                    $langBaseParams['view'] = $viewedFileName;\n                }\n                if (count($availableLangs) > 1):\n                    foreach ($availableLangs as $lc):\n                        $langQuery = http_build_query(array_merge($langBaseParams, array('lang' => $lc)));\n                ?>\n                    <a href=\"?<?= htmlspecialchars($langQuery) ?>\" class=\"gate-btn\" style=\"padding:2px 6px; font-size:10px; <?= $activeLang === $lc ? 'border-color:#38bdf8; color:#fff;' : '' ?>\"><?= htmlspecialchars(strtoupper($lc)) ?></a>\n                <?php\n                    endforeach;\n                endif;\n                if ($authLevel > 0):\n                ?>\n                    <a href=\"?gate_logout=1\" class=\"gate-btn\" style=\"padding:2px 7px; font-size:10px; border-color:#f85149; color:#ff7b72;\">Logout</a>\n                <?php endif; ?>\n            </div>\n        </div>\n\n        <div style=\"font-size:11px; color:#8b949e; margin-bottom:6px; font-weight:bold;\"><?= tl('login_title', 'Zugang & Freischaltung') ?></div>\n        <div class=\"mond-grid-3\">\n            <form method=\"POST\" style=\"display:flex; gap:4px; margin:0;\">\n                <input type=\"hidden\" name=\"gate_action\" value=\"login_token\">\n                <input type=\"text\" name=\"license_token\" class=\"gate-input\" placeholder=\"<?= tl('tab_token', 'Lizenz-Token') ?>...\">\n                <button type=\"submit\" class=\"gate-btn\" style=\"background:#238636; border-color:#2ea043; color:#fff;\">OK</button>\n            </form>\n            <form method=\"POST\" style=\"display:flex; gap:4px; margin:0;\">\n                <input type=\"hidden\" name=\"gate_action\" value=\"login_admin\">\n                <input type=\"password\" name=\"admin_key\" class=\"gate-input\" placeholder=\"<?= tl('tab_admin', 'Admin-Key') ?>...\">\n                <button type=\"submit\" class=\"gate-btn\" style=\"background:#8957e5; border-color:#a371f7; color:#fff;\">OK</button>\n            </form>\n            <form method=\"POST\" style=\"display:flex; gap:4px; margin:0;\">\n                <input type=\"hidden\" name=\"gate_action\" value=\"send_magic\">\n                <input type=\"email\" name=\"magic_email\" class=\"gate-input\" placeholder=\"<?= tl('tab_magic', 'E-Mail-Link') ?>...\">\n                <button type=\"submit\" class=\"gate-btn\" style=\"background:#1f6feb; border-color:#388bfd; color:#fff;\">&#9993;</button>\n            </form>\n        </div>\n    </div>\n    <?php endif; ?>\n\n    <?php if ($authNotice !== ''): ?>\n        <div style=\"background:rgba(35,134,54,0.2); border:1px solid #2ea043; color:#7ee787; padding:8px 12px; border-radius:6px; margin-bottom:12px; font-size:11px;\">\n            <?= htmlspecialchars($authNotice) ?>\n        </div>\n    <?php endif; ?>\n\n    <?php if ($matchingFile !== '' and isset($_GET['explorer'])): ?>\n        <div style=\"margin-bottom:10px;\">\n            <a href=\"<?= htmlspecialchars(strtok((string)($_SERVER['REQUEST_URI'] ?? './'), '?')) ?>\" class=\"gate-btn\" style=\"background:#1f6feb; border-color:#388bfd; color:#fff; width:100%;\">&#128737; App-Schleuse (<?= htmlspecialchars(basename($matchingFile)) ?>)</a>\n        </div>\n    <?php endif; ?>\n\n    <!-- STUFE 0: DATEISCHLEUSE, MONETARISIERUNG & STEUERUNG (<= 18 ZEICHEN SUMMARY) -->\n    <details class=\"mond-card\" data-tier=\"0\" data-acc-id=\"gate_t0\">\n        <summary><span>&#128309; 0: Schleuse</span></summary>\n        <div class=\"mond-accordion-grid\"><div class=\"mond-accordion-inner\" style=\"padding-top:10px;\">\n            <div class=\"mond-cyber-capsule\" style=\"border-left-color:#38bdf8; margin-bottom:8px;\">\n                <p style=\"margin:0 0 6px 0; line-height:1.5;\"><?= tl('banner_desc', 'Strenge Dateischleuse aktiv.') ?></p>\n                <p style=\"margin:0 0 10px 0; color:#38bdf8; font-size:11px;\">\n                    &#128161; <?= tl('safeguard_tip', 'PayHub-Kuerzel hinterlegen.') ?>\n                    (PayHub: <code><?= htmlspecialchars($vendorHandle) ?></code><?= $stripeAcctId !== '' ? ' &bull; Stripe: <code>' . htmlspecialchars($stripeAcctId) . '</code>' : '' ?><?= $paypalAcctId !== '' ? ' &bull; PayPal: <code>' . htmlspecialchars($paypalAcctId) . '</code>' : '' ?>)\n                </p>\n                <div class=\"mond-grid-2\" style=\"margin-bottom:8px;\">\n                    <a href=\"<?= htmlspecialchars($payHubBuyUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"background:#d29922; border-color:#e3b341; color:#000;\"><?= tl('buy_btn', 'Index-Explorer (19 EUR)') ?> &#8599;</a>\n                    <a href=\"<?= htmlspecialchars($payHubPartnerUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"border-color:#38bdf8; color:#38bdf8;\"><?= tl('partner_btn', 'PayHub-Kuerzel') ?> &#8599;</a>\n                </div>\n                <div class=\"mond-grid-2\">\n                    <a href=\"<?= htmlspecialchars($buySafeGuardUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"border-color:#58a6ff; color:#58a6ff;\"><?= tl('buy_safeguard', 'MOND SafeGuard') ?> &#8599;</a>\n                    <a href=\"<?= htmlspecialchars($buyExplorerPlusUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"border-color:#7ee787; color:#7ee787;\"><?= tl('buy_exp_plus', 'Explorer Plus') ?> &#8599;</a>\n                </div>\n            </div>\n\n            <div class=\"mond-cyber-capsule\" style=\"border-left-color:#7ee787; margin-bottom:0; font-size:11px; color:#8b949e;\">\n                <strong style=\"color:#7ee787; display:block; margin-bottom:4px;\">&#128214; Steuerung &amp; Anpassung des Index-Explorers:</strong>\n                <ul style=\"margin:0; padding-left:16px; line-height:1.5;\">\n                    <li><strong>Index-Explorer aufrufen:</strong> Unten links auf das schwebende Symbol klicken oder <code>?explorer=1</code> an die URL anhaengen.</li>\n                    <li><strong>Treppenstufen-Bruecke (<code>podest_enabled</code>):</strong> In <strong>Stufe 2</strong> (oder oben in <code>$GATE_CFG</code>) jederzeit frei ein- oder ausschaltbar.</li>\n                    <li><strong>Einblende-Zeit (<code>shield_delay_sec</code>):</strong> Sekunden bis zum Erscheinen des Icons (<code>0</code> = sofort, <code>5</code> = nach 5 Sek., <code>-1</code> = komplett unsichtbar).</li>\n                    <li><strong>Symbol &amp; Zahlungs-IDs:</strong> Eigenes Symbol (<code>shield_icon</code>) sowie PayHub-, Stripe- und PayPal-ID in <strong>Stufe 2</strong> eintragen &ndash; alles speichert sich direkt in dieser Datei.</li>\n                </ul>\n            </div>\n        </div></div>\n    </details>\n\n    <!-- STUFE 1: EXPLORER (<= 18 ZEICHEN SUMMARY) -->\n    <details class=\"mond-card is-open\" data-tier=\"1\" data-acc-id=\"gate_t1\" open>\n        <summary><span>&#128994; 1: Explorer</span></summary>\n        <div class=\"mond-accordion-grid\"><div class=\"mond-accordion-inner\" style=\"padding-top:10px;\">\n\n            <?php if ($hasLocalExplorerPlus or $hasLocalSafeGuard): ?>\n            <div class=\"dock-bar\">\n                <span style=\"font-size:11px; color:#7ee787; font-weight:bold;\">&#128268; <?= tl('docked_label', 'Im Ordner angedockt:') ?></span>\n                <div style=\"display:flex; gap:6px; flex-wrap:wrap;\">\n                    <?php if ($hasLocalExplorerPlus): ?>\n                        <a href=\"explorer.php?dir=<?= urlencode($scanPath) ?>\" class=\"gate-btn\" style=\"background:#238636; border-color:#2ea043; color:#fff; padding:4px 10px;\">&#9889; Explorer Plus</a>\n                    <?php endif; ?>\n                    <?php if ($hasLocalSafeGuard): ?>\n                        <a href=\"safeguard.php\" class=\"gate-btn\" style=\"background:#1f6feb; border-color:#388bfd; color:#fff; padding:4px 10px;\">&#128737; SafeGuard</a>\n                    <?php endif; ?>\n                </div>\n            </div>\n            <?php endif; ?>\n\n            <div class=\"exp-pathbar\">\n                <div>\n                    <a href=\"?explorer=1\">&#127968; <?= htmlspecialchars($folderName) ?>/</a><?php\n                    $accPath = '';\n                    foreach ($subParts as $sp):\n                        $accPath = ($accPath !== '' ? $accPath . '/' : '') . $sp;\n                    ?><a href=\"?explorer=1&amp;sub=<?= urlencode($accPath) ?>\"><?= htmlspecialchars($sp) ?>/</a><?php endforeach; ?>\n                </div>\n                <span style=\"font-size:10px; color:#8b949e;\"><?= count($folders) ?> Ordner &bull; <?= count($files) ?> Dateien</span>\n            </div>\n\n            <?php if ($viewedFileName !== ''):\n                $closeViewUrl = '?explorer=1' . ($relSub !== '' ? '&sub=' . urlencode($relSub) : '');\n                $rawFileUrl   = ($relSub !== '' ? './' . $relSub . '/' : './') . $viewedFileName;\n            ?>\n                <div class=\"reader-box\">\n                    <div style=\"display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;\">\n                        <div>\n                            <strong style=\"color:#38bdf8; font-size:12px;\">&#128214; <?= htmlspecialchars($viewedFileName) ?></strong>\n                            <span style=\"font-size:10px; color:#8b949e; margin-left:6px;\">(<?= htmlspecialchars($viewedFileMeta) ?>)</span>\n                        </div>\n                        <div style=\"display:flex; gap:6px;\">\n                            <?php if ($hasLocalExplorerPlus): ?>\n                                <a href=\"explorer.php?dir=<?= urlencode($scanPath) ?>\" class=\"gate-btn\" style=\"padding:3px 8px; font-size:10px; border-color:#2ea043; color:#7ee787;\">&#9889; Explorer+</a>\n                            <?php endif; ?>\n                            <a href=\"<?= htmlspecialchars($rawFileUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"padding:3px 8px; font-size:10px;\"><?= tl('open', 'Tab') ?></a>\n                            <a href=\"<?= htmlspecialchars($closeViewUrl) ?>\" class=\"gate-btn\" style=\"padding:3px 8px; font-size:10px; border-color:#f85149; color:#ff7b72;\"><?= tl('close_reader', 'Schliessen') ?></a>\n                        </div>\n                    </div>\n                    <pre class=\"reader-pre\"><?= htmlspecialchars($viewedFileContent) ?></pre>\n                </div>\n            <?php endif; ?>\n\n            <div class=\"exp-tree\">\n                <?php if ($relSub !== ''):\n                    $parentUrl = '?explorer=1' . ($upSub !== '' ? '&sub=' . urlencode($upSub) : '');\n                ?>\n                    <div class=\"exp-row exp-row-parent\">\n                        <div class=\"exp-left\">\n                            <span class=\"exp-icon\">&#8617;</span>\n                            <a href=\"<?= htmlspecialchars($parentUrl) ?>\" class=\"exp-name-parent\">..</a>\n                            <span style=\"font-size:10.5px; color:#8b949e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\"><?= tl('parent_up', 'Uebergeordneter Ordner') ?></span>\n                        </div>\n                        <div class=\"exp-right\">\n                            <span class=\"exp-badge-up\">&#11014; ..</span>\n                            <?php if (count($subParts) > 1): ?>\n                                <a href=\"?explorer=1\" class=\"gate-btn\" style=\"padding:2px 6px; font-size:10px;\">&#127968; /</a>\n                            <?php endif; ?>\n                        </div>\n                    </div>\n                <?php endif; ?>\n\n                <?php foreach ($folders as $fol):\n                    $nextSub = ($relSub !== '' ? $relSub . '/' : '') . $fol;\n                ?>\n                    <div class=\"exp-row\">\n                        <div class=\"exp-left\">\n                            <span class=\"exp-icon\">&#128193;</span>\n                            <a href=\"?explorer=1&amp;sub=<?= urlencode($nextSub) ?>\" class=\"exp-name-folder\"><?= htmlspecialchars($fol) ?>/</a>\n                        </div>\n                        <div class=\"exp-right\">\n                            <span class=\"exp-badge-dir\"><?= tl('dir_badge', 'ORDNER') ?></span>\n                            <a href=\"?explorer=1&amp;sub=<?= urlencode($nextSub) ?>\" class=\"gate-btn\" style=\"padding:2px 7px; font-size:10px;\">&rarr;</a>\n                        </div>\n                    </div>\n                <?php endforeach; ?>\n\n                <?php foreach ($files as $f):\n                    $fileUrl = ($relSub !== '' ? './' . $relSub . '/' : './') . $f['name'];\n                    $readUrl = '?explorer=1' . ($relSub !== '' ? '&sub=' . urlencode($relSub) : '') . '&view=' . urlencode($f['name']);\n                    $isCur   = ($viewedFileName === $f['name']);\n                ?>\n                    <div class=\"exp-row <?= $isCur ? 'exp-row-active' : '' ?>\">\n                        <div class=\"exp-left\">\n                            <span class=\"exp-icon\">&#128196;</span>\n                            <?php if ($f['readable']): ?>\n                                <a href=\"<?= htmlspecialchars($readUrl) ?>\" class=\"exp-name-file\"><?= htmlspecialchars($f['name']) ?></a>\n                            <?php else: ?>\n                                <span class=\"exp-name-file\"><?= htmlspecialchars($f['name']) ?></span>\n                            <?php endif; ?>\n                        </div>\n                        <div class=\"exp-right\">\n                            <span class=\"exp-meta\"><?= htmlspecialchars($f['size']) ?></span>\n                            <?php if ($f['readable']): ?>\n                                <a href=\"<?= htmlspecialchars($readUrl) ?>\" class=\"gate-btn\" style=\"padding:2px 7px; font-size:10px; border-color:#2ea043; color:#7ee787;\"><?= tl('read', 'Lesen') ?></a>\n                            <?php endif; ?>\n                            <?php if ($f['web']): ?>\n                                <a href=\"<?= htmlspecialchars($fileUrl) ?>\" target=\"_blank\" class=\"gate-btn\" style=\"padding:2px 7px; font-size:10px;\"><?= tl('open', 'Tab') ?></a>\n                            <?php endif; ?>\n                        </div>\n                    </div>\n                <?php endforeach; ?>\n\n                <?php if ($relSub === '' and empty($folders) and empty($files)): ?>\n                    <div style=\"padding:14px; color:#8b949e; font-style:italic; text-align:center;\"><?= tl('empty_dir', 'Dieses Verzeichnis ist leer.') ?></div>\n                <?php endif; ?>\n            </div>\n\n        </div></div>\n    </details>\n\n    <!-- STUFE 2: PAYHUB, STRIPE, PAYPAL, BRUECKE & DELAY (<= 18 ZEICHEN SUMMARY) -->\n    <?php if ($canManage): ?>\n    <details class=\"mond-card\" data-tier=\"2\" data-acc-id=\"gate_t2\">\n        <summary><span>&#128993; 2: Setup</span></summary>\n        <div class=\"mond-accordion-grid\"><div class=\"mond-accordion-inner\" style=\"padding-top:10px;\">\n            <div class=\"mond-cyber-capsule\" style=\"border-left-color:#d29922; margin-bottom:0;\">\n                <strong style=\"color:#e3b341; display:block; margin-bottom:4px; font-size:11.5px;\">&#128176; PayHub, Stripe, PayPal &amp; Index-Explorer Verhalten (Selbstspeichernd):</strong>\n                <p style=\"margin:0 0 8px 0; color:#8b949e; font-size:11px;\">\n                    Tragen Sie Ihr PayHub-Kuerzel sowie Ihre Stripe- oder PayPal-ID ein und legen Sie fest, ob die Treppen-Bruecke unten angezeigt wird:\n                </p>\n                <form method=\"POST\" style=\"margin:0;\">\n                    <input type=\"hidden\" name=\"gate_action\" value=\"save_vendor\">\n                    <div class=\"mond-grid-3\" style=\"margin-bottom:8px;\">\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">PayHub-Kuerzel:</label>\n                            <input type=\"text\" name=\"vendor_handle\" class=\"gate-input\" value=\"<?= htmlspecialchars($vendorHandle) ?>\" placeholder=\"mario\">\n                        </div>\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">Stripe-ID (optional):</label>\n                            <input type=\"text\" name=\"stripe_id\" class=\"gate-input\" value=\"<?= htmlspecialchars($stripeAcctId) ?>\" placeholder=\"acct_123...\">\n                        </div>\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">PayPal-ID / E-Mail (optional):</label>\n                            <input type=\"text\" name=\"paypal_id\" class=\"gate-input\" value=\"<?= htmlspecialchars($paypalAcctId) ?>\" placeholder=\"merchant@paypal.de\">\n                        </div>\n                    </div>\n                    <div class=\"mond-grid-3\" style=\"margin-bottom:8px;\">\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">Icon-Delay (Sek., -1 = aus):</label>\n                            <input type=\"number\" name=\"shield_delay_sec\" min=\"-1\" max=\"300\" class=\"gate-input\" value=\"<?= (int)$shieldDelaySec ?>\">\n                        </div>\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">Icon-Symbol (HTML-Entity):</label>\n                            <input type=\"text\" name=\"shield_icon\" class=\"gate-input\" value=\"<?= htmlspecialchars($shieldIconRaw) ?>\" placeholder=\"&amp;#128737;\">\n                        </div>\n                        <div>\n                            <label style=\"color:#8b949e; font-size:10px; display:block; margin-bottom:2px;\">Dateisortierung:</label>\n                            <select name=\"sort_mode\" class=\"gate-select\">\n                                <option value=\"name_asc\" <?= $currentSort === 'name_asc' ? 'selected' : '' ?>>Name (A &rarr; Z)</option>\n                                <option value=\"name_desc\" <?= $currentSort === 'name_desc' ? 'selected' : '' ?>>Name (Z &rarr; A)</option>\n                                <option value=\"mtime_desc\" <?= $currentSort === 'mtime_desc' ? 'selected' : '' ?>>Neueste zuerst</option>\n                                <option value=\"size_desc\" <?= $currentSort === 'size_desc' ? 'selected' : '' ?>>Groesste zuerst</option>\n                            </select>\n                        </div>\n                    </div>\n                    <div style=\"margin-bottom:8px;\">\n                        <label style=\"display:inline-flex; align-items:center; gap:6px; cursor:pointer; background:#0d1117; border:1px solid #30363d; padding:6px 10px; border-radius:5px; color:#7ee787; font-size:11px; width:100%; box-sizing:border-box;\">\n                            <input type=\"checkbox\" name=\"podest_enabled\" value=\"1\" <?= $podestEnabled ? 'checked' : '' ?>>\n                            <span>Perspektivische Treppenstufen-Bruecke am unteren Bildschirmrand aktivieren (<code>podest_enabled</code>)</span>\n                        </label>\n                    </div>\n                    <div class=\"mond-grid-2\">\n                        <button type=\"submit\" class=\"gate-btn\" style=\"background:#d29922; border-color:#e3b341; color:#000;\">&#128190; Config-Sicherung</button>\n                        <a href=\"<?= htmlspecialchars($payHubPartnerUrl) ?>\" target=\"_blank\" class=\"gate-btn\">&#128279; Kuerzel-Registrierung &#8599;</a>\n                    </div>\n                </form>\n            </div>\n        </div></div>\n    </details>\n    <?php endif; ?>\n\n    <!-- STUFE 3: ADMIN (<= 18 ZEICHEN SUMMARY) -->\n    <?php if ($isMaster): ?>\n    <details class=\"mond-card\" data-tier=\"3\" data-acc-id=\"gate_t3\">\n        <summary><span>&#128308; 3: Admin</span></summary>\n        <div class=\"mond-accordion-grid\"><div class=\"mond-accordion-inner\" style=\"padding-top:10px;\">\n            <div class=\"mond-cyber-capsule\" style=\"border-left-color:#8957e5; margin-bottom:0;\">\n                <div style=\"font-size:11px; color:#c9d1d9; line-height:1.6;\">\n                    Modus: <strong><?= $hasMothership ? 'Mutterschiff-Integration (MondLayout aktiv)' : 'Autarker Fremdserver-Fallback' ?></strong><br>\n                    Speicherort: <strong><?= $storageMode === 'self' ? '1-Datei Selbstspeicherung (direkt in index.php)' : 'Fallback (gatekeeper.json)' ?></strong><br>\n                    Payment-IDs: <code>PayHub: <?= htmlspecialchars($vendorHandle) ?></code><?= $stripeAcctId !== '' ? ' &bull; <code>Stripe: ' . htmlspecialchars($stripeAcctId) . '</code>' : '' ?><?= $paypalAcctId !== '' ? ' &bull; <code>PayPal: ' . htmlspecialchars($paypalAcctId) . '</code>' : '' ?><br>\n                    Treppen-Bruecke: <code style=\"color:<?= $podestEnabled ? '#7ee787' : '#ff7b72' ?>;\"><?= $podestEnabled ? 'AN' : 'AUS' ?></code> &bull;\n                    Icon-Delay: <code style=\"color:#38bdf8;\"><?= (int)$shieldDelaySec ?>s</code> &bull;\n                    Sortierung: <code style=\"color:#e3b341;\"><?= htmlspecialchars($currentSort) ?></code><br>\n                    Eingebrannter Admin-Key: <code style=\"color:#7ee787;\"><?= htmlspecialchars($adminSecretKey) ?></code>\n                </div>\n            </div>\n        </div></div>\n    </details>\n    <?php endif; ?>\n\n</div>\n\n<script>\ndocument.addEventListener(\"DOMContentLoaded\", function() {\n    var storeKey = \"mond_gate_acc_\" + <?= json_encode($folderName, 193) ?>;\n    var savedState = {};\n    try {\n        var raw = sessionStorage.getItem(storeKey);\n        if (raw) {\n            savedState = JSON.parse(raw) || {};\n        }\n    } catch (err) {}\n\n    function persistAccState() {\n        try {\n            sessionStorage.setItem(storeKey, JSON.stringify(savedState));\n        } catch (err) {}\n    }\n\n    document.querySelectorAll(\".mond-gate-wrap details.mond-card\").forEach(function(acc) {\n        var accId = acc.getAttribute(\"data-acc-id\");\n        var summary = acc.querySelector(\":scope > summary\");\n        var grid = acc.querySelector(\":scope > .mond-accordion-grid\");\n\n        if (accId && typeof savedState[accId] === \"boolean\") {\n            if (savedState[accId]) {\n                acc.setAttribute(\"open\", \"\");\n                acc.classList.add(\"is-open\");\n            } else {\n                acc.removeAttribute(\"open\");\n                acc.classList.remove(\"is-open\");\n            }\n        } else if (acc.hasAttribute(\"open\")) {\n            acc.classList.add(\"is-open\");\n        }\n\n        if (grid) {\n            grid.addEventListener(\"click\", function(ev) {\n                ev.stopPropagation();\n            });\n        }\n\n        if (summary) {\n            summary.addEventListener(\"click\", function(ev) {\n                ev.preventDefault();\n                ev.stopPropagation();\n                if (acc.hasAttribute(\"open\")) {\n                    acc.classList.remove(\"is-open\");\n                    if (accId) {\n                        savedState[accId] = false;\n                        persistAccState();\n                    }\n                    setTimeout(function() {\n                        acc.removeAttribute(\"open\");\n                    }, 300);\n                } else {\n                    acc.setAttribute(\"open\", \"\");\n                    if (accId) {\n                        savedState[accId] = true;\n                        persistAccState();\n                    }\n                    requestAnimationFrame(function() {\n                        acc.classList.add(\"is-open\");\n                    });\n                }\n            });\n        }\n    });\n});\n</script>\n<?php\n$moduleContent = (string)ob_get_clean();\n\nif ($hasMothership) {\n    MondLayout::renderHtml(array(\n        'title'       => $MODULE_TITLE,\n        'calling_dir' => __DIR__,\n        'body'        => $moduleContent\n    ));\n} else {\n    echo '<!DOCTYPE html><html lang=\"' . htmlspecialchars($activeLang) . '\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>' . htmlspecialchars($MODULE_TITLE) . '</title><style>body{background:#060913;color:#c9d1d9;margin:0;padding:14px;font-family:system-ui,sans-serif;}</style></head><body>'\n       . $moduleContent\n       . '<div style=\"max-width:880px;margin:16px auto 0 auto;padding-top:10px;border-top:1px solid #21262d;text-align:center;font-size:10.5px;color:#8b949e;\">MOND.TV Index-Explorer &bull; template by marioberg.de</div>'\n       . '</body></html>';\n}\n"
+        },
+        {
+            "path": "menu.json",
+            "lang": "neutral",
+            "size": 756,
+            "md5": "91fc19a6f310754d8e7ca4ad01be044f",
+            "content": "{\n    \"settings\": {\n        \"position\": \"header_right\",\n        \"fx\": \"glass_slide_down\",\n        \"theme\": \"lunar_dark\",\n        \"tts_enabled\": true,\n        \"min_auth_tier\": 0\n    },\n    \"items\": [\n        {\"title\": {\"de\": \"Showcase\", \"en\": \"Showcase\"}, \"url\": \"?level=0\", \"icon\": \"🟣\", \"min_tier\": 0},\n        {\"title\": {\"de\": \"Workspace\", \"en\": \"Workspace\"}, \"url\": \"?level=1\", \"icon\": \"🟢\", \"min_tier\": 1},\n        {\"title\": {\"de\": \"Setup\", \"en\": \"Setup\"}, \"url\": \"?level=2\", \"icon\": \"🟡\", \"min_tier\": 2},\n        {\"title\": {\"de\": \"Admin\", \"en\": \"Admin\"}, \"url\": \"?level=3\", \"icon\": \"🔵\", \"min_tier\": 3},\n        {\"title\": {\"de\": \"API (JSON)\", \"en\": \"API (JSON)\"}, \"url\": \"?json=1\", \"icon\": \"🔌\", \"min_tier\": 0, \"target_blank\": true}\n    ]\n}\n"
+        },
+        {
+            "path": "tpl/cert.html",
+            "lang": "neutral",
+            "size": 213,
+            "md5": "6e75b3862b2114c508e7639d4e6a865c",
+            "content": "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Lizenz-Zertifikat</title></head><body style=\"font-family:sans-serif;padding:30px;\"><h2>LIZENZ-ZERTIFIKAT</h2><p>Gültige MOND Einzellizenz.</p></body></html>"
+        },
+        {
+            "path": "tpl/receipt.html",
+            "lang": "neutral",
+            "size": 229,
+            "md5": "8f51d11d5e94b93cf58e83cdfc90e0fb",
+            "content": "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Rechnung // Beleg</title></head><body style=\"font-family:sans-serif;padding:30px;\"><h2>BELEG: MOND.TV</h2><p>Vielen Dank für Ihre Bestellung über PayHub.</p></body></html>"
+        }
+    ]
+}
+MONDTREE_SEAL;
+
+if (!defined('MOND_AUTOPOIESE_JSON')) {
+    define('MOND_AUTOPOIESE_JSON', $AUTOPOIESE_TREE_JSON);
+}
+if (!defined('MOND_BLUEPRINT_LOADED')) {
+    define('MOND_BLUEPRINT_LOADED', true);
+}
+
+if (!function_exists('mond_blueprint_get_tree')) {
+    function mond_blueprint_get_tree(): array {
+        $decoded = json_decode(MOND_AUTOPOIESE_JSON, true);
+        return is_array($decoded) ? $decoded : array('dirs' => array(), 'files' => array());
+    }
+}
+
+if (!function_exists('mond_blueprint_unpack_tree')) {
+    function mond_blueprint_unpack_tree(string $targetDir, bool $overwrite = false): array {
+        $tree     = mond_blueprint_get_tree();
+        $unpacked = 0;
+        $base     = rtrim(str_replace('\', '/', $targetDir), '/');
+        if (!is_dir($base)) {
+            @mkdir($base, 0755, true);
+        }
+        $dirsList  = (isset($tree['dirs']) and is_array($tree['dirs'])) ? $tree['dirs'] : array();
+        $filesList = (isset($tree['files']) and is_array($tree['files'])) ? $tree['files'] : array();
+
+        foreach ($dirsList as $relDir) {
+            $cleanDir = ltrim((string)$relDir, '/');
+            if ($cleanDir === '' or str_contains($cleanDir, '..')) continue;
+            $fullDir = $base . '/' . $cleanDir;
+            if (!is_dir($fullDir)) {
+                @mkdir($fullDir, 0755, true);
+            }
+        }
+        foreach ($filesList as $fEntry) {
+            $relFile = ltrim((string)($fEntry['path'] ?? ''), '/');
+            if ($relFile === '' or str_contains($relFile, '..')) continue;
+            $fullFile = $base . '/' . $relFile;
+            if (!$overwrite and is_file($fullFile)) continue;
+            $parentDir = dirname($fullFile);
+            if (!is_dir($parentDir)) {
+                @mkdir($parentDir, 0755, true);
+            }
+            $rawBytes = null;
+            if (isset($fEntry['content']) and is_string($fEntry['content'])) {
+                $rawBytes = $fEntry['content'];
+            } elseif (isset($fEntry['b64']) and is_string($fEntry['b64']) and $fEntry['b64'] !== '') {
+                $decoded = base64_decode($fEntry['b64'], true);
+                if ($decoded !== false) {
+                    $rawBytes = $decoded;
+                }
+            }
+            if ($rawBytes !== null and @file_put_contents($fullFile, $rawBytes) !== false) {
+                $unpacked++;
+            }
+        }
+        return array('unpacked' => $unpacked, 'total_files' => count($filesList));
+    }
+}
+// === [MOND_SLOT: SEALED_DNA_END] ===
+
+// =========================================================================
+// 5. UNIVERSAL VOICE CONTRACT & EARLY-RETURN GUARD
+// =========================================================================
+if (isset($_GET['mond_voice']) or isset($_GET['voice'])) {
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(array(
+        'status' => 'ok',
+        'module' => $moduleName,
+        'lang'   => $activeLang,
+        'speak'  => 'MOND Modul ' . $moduleName . ' bereit.'
+    ), 192);
+    exit;
+}
+
+$isDirect = ($origScriptFilename === str_replace('\\', '/', __FILE__) or $origScriptFilename === $selfDir . '/index.php');
+if (!$isDirect) {
+    return;
+}
+
+// =========================================================================
+// 6. PAYHUB 4-MODELLE KONFIGURATION & PRETTY-URL GENERATOR
+// =========================================================================
+$rawTitle = '{{MOD_TITLE}}';
+$MODULE_TITLE = ($rawTitle !== '' and !str_starts_with($rawTitle, '{{'))
+    ? $rawTitle
+    : tl('raw_blueprint_title', 'MOND Master-Blueprint (Rohling)');
+
+$vendorHandle = 'mario';
+if ($vendorHandle === '' or str_starts_with($vendorHandle, '{{')) {
+    $vendorHandle = 'mario';
+}
+
+$payHubSlug = 'bezahl';
+if ($payHubSlug === '' or str_starts_with($payHubSlug, '{{')) {
+    $payHubSlug = 'bezahl';
+}
+
+$phShowSingle = ('1' !== '0');
+$phShowSub    = ('1' !== '0');
+$phShowTokens = ('1' !== '0');
+$phShowBuyout = ('1' !== '0');
+
+$phPriceSingle    = ('19EUR' !== '' and !str_starts_with('19EUR', '{{')) ? '19EUR' : '19EUR';
+$phPriceSub       = ('9EUR' !== '' and !str_starts_with('9EUR', '{{')) ? '9EUR' : '9EUR';
+$phIntervalSub    = ('30d' !== '' and !str_starts_with('30d', '{{')) ? '30d' : '30d';
+$phPriceTokens    = ('3EUR' !== '' and !str_starts_with('3EUR', '{{')) ? '3EUR' : '3EUR';
+$phIntervalTokens = ('50_credits' !== '' and !str_starts_with('50_credits', '{{')) ? '50_credits' : '50_credits';
+$phPriceBuyout    = ('149EUR' !== '' and !str_starts_with('149EUR', '{{')) ? '149EUR' : '149EUR';
+
+$phLabelSingle = ('{{PH_TEXT_SINGLE}}' !== '' and !str_starts_with('{{PH_TEXT_SINGLE}}', '{{')) ? '{{PH_TEXT_SINGLE}}' : (tl('btn_buy_single', 'Einzelkauf') . ' (' . $phPriceSingle . ')');
+$phLabelSub    = ('{{PH_TEXT_SUB}}' !== '' and !str_starts_with('{{PH_TEXT_SUB}}', '{{')) ? '{{PH_TEXT_SUB}}' : (tl('btn_buy_sub', 'Abo') . ' (' . $phPriceSub . ')');
+$phLabelTokens = ('{{PH_TEXT_TOKENS}}' !== '' and !str_starts_with('{{PH_TEXT_TOKENS}}', '{{')) ? '{{PH_TEXT_TOKENS}}' : (tl('btn_buy_tokens', 'Credits') . ' (' . $phPriceTokens . ')');
+$phLabelBuyout = ('{{PH_TEXT_BUYOUT}}' !== '' and !str_starts_with('{{PH_TEXT_BUYOUT}}', '{{')) ? '{{PH_TEXT_BUYOUT}}' : (tl('btn_buy_buyout', 'Buyout') . ' (' . $phPriceBuyout . ')');
+
+$activeRefCode = isset($_SESSION['mond_ref_code']) ? (string)$_SESSION['mond_ref_code'] : '';
+$refSuffix     = ($activeRefCode !== '') ? ('?ref=' . urlencode($activeRefCode)) : '';
+
+$cleanSlugMod  = preg_replace('/[^a-zA-Z0-9_-]/', '', $moduleName) ?: 'app_starter';
+$urlPaySingle  = 'https://mond.tv/' . rawurlencode($payHubSlug) . '/' . rawurlencode($cleanSlugMod) . '/' . rawurlencode($phPriceSingle) . '/lifetime/' . rawurlencode($vendorHandle) . $refSuffix;
+$urlPaySub     = 'https://mond.tv/' . rawurlencode($payHubSlug) . '/' . rawurlencode($cleanSlugMod . '_abo') . '/' . rawurlencode($phPriceSub) . '/' . rawurlencode($phIntervalSub) . '/' . rawurlencode($vendorHandle) . $refSuffix;
+$urlPayTokens  = 'https://mond.tv/' . rawurlencode($payHubSlug) . '/' . rawurlencode($cleanSlugMod . '_tokens') . '/' . rawurlencode($phPriceTokens) . '/' . rawurlencode($phIntervalTokens) . '/' . rawurlencode($vendorHandle) . $refSuffix;
+$urlPayBuyout  = 'https://mond.tv/' . rawurlencode($payHubSlug) . '/' . rawurlencode($cleanSlugMod . '_buyout') . '/' . rawurlencode($phPriceBuyout) . '/lifetime/' . rawurlencode($vendorHandle) . $refSuffix;
+$urlBlueprinter = mond_get_blueprinter_url();
+
+ob_start();
+?>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+<style>
+    .mond-wrap { width: 100%; max-width: 860px; margin: 0 auto; font-family: system-ui, sans-serif; color: #c9d1d9; font-size: 11.5px; padding: 12px; box-sizing: border-box; overflow-x: hidden; }
+    .mond-card { background: #010409; border: 2px solid #1f6feb; border-radius: 8px; padding: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 100%; box-sizing: border-box; margin-bottom: 12px; }
+    .mond-cyber-capsule { background: #0d1117; border: 1px solid #30363d; border-left: 3px solid #38bdf8; border-radius: 6px; padding: 10px 12px; margin: 10px 0; box-sizing: border-box; }
+    .mond-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; width: 100%; box-sizing: border-box; }
+    @media (max-width: 560px) { .mond-grid-2 { grid-template-columns: 1fr; } }
+
+    .mond-btn { background: #1f6feb; border: 1px solid #388bfd; color: #fff; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+    .mond-btn:hover { filter: brightness(1.14); }
+    .mond-btn-blue { background: #1f6feb; border-color: #388bfd; }
+    .mond-btn-green { background: #238636; border-color: #2ea043; }
+    .mond-btn-purple { background: #8957e5; border-color: #a371f7; }
+    .mond-btn-gold { background: #d29922; border-color: #e3b341; color: #000; }
+    .mond-btn-sec { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+</style>
+<div class="mond-wrap" data-dom-ignore="true">
+    <div class="mond-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+            <h2 style="color: #38bdf8; margin: 0; font-size: 15px;">&#128424;&#65039; <?= htmlspecialchars($MODULE_TITLE) ?></h2>
+            <?php if ($activeRefCode !== ''): ?>
+                <span style="font-family: monospace; font-size: 10px; background: rgba(35,134,54,0.2); border: 1px solid #2ea043; color: #7ee787; padding: 2px 7px; border-radius: 4px;">
+                    Partner: <?= htmlspecialchars($activeRefCode) ?>
+                </span>
+            <?php endif; ?>
+        </div>
+
+        <p style="line-height: 1.5; color: #c9d1d9; margin: 0 0 10px 0;">
+            <?= htmlspecialchars(tl('raw_blueprint_desc', 'Autarkes MOND-Modul mit integrierter PayHub-Monetarisierung und Master-DNA.')) ?>
+        </p>
+
+        <!-- [MOND_SLOT: UI_WERKBANK_START] -->
+        <?php if (!defined('MOND_COMMERCIAL_DISABLED') or !MOND_COMMERCIAL_DISABLED): ?>
+            <div class="mond-cyber-capsule" style="border-left-color: #d29922;">
+                <strong style="color: #e3b341; display: block; margin-bottom: 3px; font-size: 11.5px;">
+                    &#128179; <?= htmlspecialchars(tl('payhub_box_title', 'Monetarisierung & Lizenzen (PayHub)')) ?>
+                </strong>
+                <p style="color: #8b949e; margin: 0 0 10px 0; line-height: 1.4; font-size: 10.5px;">
+                    <?= htmlspecialchars(tl('payhub_box_desc', 'Waehlen Sie Ihr gewuenschtes Modell. Sofortige Freischaltung ueber PayHub & Stripe.')) ?>
+                </p>
+
+                <div class="mond-grid-2">
+                    <?php if ($phShowSingle): ?>
+                        <a href="<?= htmlspecialchars($urlPaySingle) ?>" target="_blank" class="mond-btn mond-btn-blue">
+                            &#128722; <?= htmlspecialchars($phLabelSingle) ?>
+                        </a>
+                    <?php endif; ?>
+
+                    <?php if ($phShowSub): ?>
+                        <a href="<?= htmlspecialchars($urlPaySub) ?>" target="_blank" class="mond-btn mond-btn-green">
+                            &#128260; <?= htmlspecialchars($phLabelSub) ?>
+                        </a>
+                    <?php endif; ?>
+
+                    <?php if ($phShowTokens): ?>
+                        <a href="<?= htmlspecialchars($urlPayTokens) ?>" target="_blank" class="mond-btn mond-btn-purple">
+                            &#129689; <?= htmlspecialchars($phLabelTokens) ?>
+                        </a>
+                    <?php endif; ?>
+
+                    <?php if ($phShowBuyout): ?>
+                        <a href="<?= htmlspecialchars($urlPayBuyout) ?>" target="_blank" class="mond-btn mond-btn-gold">
+                            &#128081; <?= htmlspecialchars($phLabelBuyout) ?>
+                        </a>
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php endif; ?>
+        <!-- [MOND_SLOT: UI_WERKBANK_END] -->
+
+        <?php if (!defined('MOND_BLUEPRINT_LOADED')): ?>
+            <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+                <a href="<?= htmlspecialchars($urlBlueprinter) ?>" class="mond-btn mond-btn-sec">
+                    &#128293; <?= htmlspecialchars(tl('btn_burn_raw', 'Brennen')) ?>
+                </a>
+            </div>
+        <?php endif; ?>
+    </div>
+</div>
+<?php
+$moduleContent = (string)ob_get_clean();
+
+if (class_exists('MondLayout', false) and method_exists('MondLayout', 'renderHtml')) {
+    MondLayout::renderHtml(array(
+        'title'       => $MODULE_TITLE,
+        'calling_dir' => __DIR__,
+        'body'        => $moduleContent
+    ));
+} else {
+    echo '<!DOCTYPE html><html lang="' . htmlspecialchars($activeLang) . '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' . htmlspecialchars($MODULE_TITLE) . '</title><style>body{background:#060913;color:#c9d1d9;margin:0;padding:12px;font-family:system-ui,sans-serif;}</style></head><body>' . $moduleContent . '</body></html>';
+}
