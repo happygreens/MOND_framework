@@ -2,7 +2,7 @@
 
 > **Maschinenlesbare Master-Blueprint für KI-Agenten:** [llms.txt](https://raw.githubusercontent.com/happygreens/MOND_framework/main/llms.txt)
 
-> Maschinenlesbare Master-Blueprint für KI-Agenten: [llms.txt](https://github.com/happygreens/MOND_framework/blob/main/llms.txt)
+> Menschenlesbare Master-Blueprint: [llms.txt](https://github.com/happygreens/MOND_framework/blob/main/llms.txt)
 
 
 Das **M.O.N.D.-Framework** ist eine resiliente, autarke Hybrid-Architektur für PHP-, JavaScript- und CSS-Anwendungen. Es vereint eine mobile-first Benutzeroberfläche mit einer nativen Headless-JSON-Schnittstelle, dreifachen Fallback-Bibliotheken und einer sofort einsatzbereiten Kassenanbindung – völlig unabhängig von teuren Drittanbieter-Plattformen.
