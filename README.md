@@ -1,7 +1,7 @@
 # M.O.N.D. Framework (Master Blueprint & Hybrid Architecture)
 
 > **Machine-readable Master Blueprint for AI Agents:** [llms.txt](https://github.com/happygreens/MOND_framework/blob/main/llms.txt)  
-> *🇩🇪 [Zur deutschen Dokumentation](./README.de.md)*
+> *🇩🇪 [Zur deutschen Dokumentation](README.de.md)*
 
 ---
 
